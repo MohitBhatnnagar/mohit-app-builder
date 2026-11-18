@@ -119,7 +119,7 @@ Each app is a normal folder with its own git history: `projects/<name>/`. Run on
 - Restoring a checkpoint restores code, not data. The database and uploads are not versioned.
 - AI helpers use `claude-opus-5-5` by default (set `MOHIT_AI_MODEL` to change) with server-side
   refusal fallback enabled. Every AI call is billed to your Anthropic account.
-- `npm run smoke` runs 65 end-to-end checks. It strips real API keys from its environment and uses a
+- `npm run smoke` runs 67 end-to-end checks. It strips real API keys from its environment and uses a
   mock email server, so it never sends mail or spends money.
 - `start_app` and `run_script` keep each app's `server/platform/` in sync with Mohit, so platform fixes
   reach existing apps (the update is saved as a checkpoint).
@@ -138,6 +138,7 @@ local HTTP for this. Results and every issue found are in [loop/scorecard.md](lo
 | 4 | Invoicing with PDFs, team chat, multi-vendor marketplace | 81k–199k | 77% | 6 |
 | 5 | Recruiting tracker, restaurant POS with live kitchen display, social network | 186k–2.55M | 60% | 7 |
 | 6 | Clinic with patient portal, warehouse management, lettings with rent ledger | 22k–545k | 83% | 1 |
+| 7 | Event ticketing, gym class booking, expense approvals | 41k–172k | 77% | 3 |
 
 Every app since batch 2 has started and migrated on the first try, including live updates over
 server-sent events, video streaming with seeking, and a million-event analytics app (12-month dashboard in

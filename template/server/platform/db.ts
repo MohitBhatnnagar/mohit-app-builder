@@ -119,6 +119,14 @@ export function migrate(): void {
   for (const file of fs.readdirSync(dir).filter((f) => f.endsWith(".sql")).sort()) {
     if (applied.has(file)) continue;
     const sql = fs.readFileSync(path.join(dir, file), "utf8");
+    // A table named like one of Mohit's own (users, sessions, files) would clash with sign-in or storage.
+    const reserved = /CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?["`]?(users|sessions|files|_migrations)["`]?\s*\(/i.exec(sql);
+    if (reserved)
+      throw new Error(
+        `Migration ${file} creates a table called "${reserved[1]}", but that name is taken by Mohit's built-in ` +
+          `${reserved[1] === "sessions" ? "sign-in sessions" : reserved[1] === "files" ? "file storage" : reserved[1] === "users" ? "user accounts (add your own columns in a separate table keyed by user_id)" : "migration log"}. ` +
+          `Use a more specific name, e.g. "${reserved[1] === "sessions" ? "class_sessions" : reserved[1] === "files" ? "documents" : reserved[1] === "users" ? "profiles" : "my_migrations"}".`,
+      );
     try {
       transaction(() => {
         db.exec(sql);

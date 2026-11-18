@@ -308,6 +308,21 @@ try {
   const ramp = await call("profile_data", { project: "smoke-test", table: "notes" });
   check(/notes\.created_at: [\d.]+× more rows per month/.test(ramp), `profile_data flags a steep monthly ramp (often missing older data)${/more rows per month/.test(ramp) ? "" : `
 ${ramp}`}`);
+  // Batch 7: one batch action (same moment, same parent) isn't a clamped-date bug; reserved table names are explained.
+  await call("write_file", { project: "smoke-test", path: "scripts/batch.ts", content: [
+    'import { insertMany, get } from "../server/platform/db.ts";',
+    'const u = get<{ id: number }>("SELECT id FROM users WHERE email = ?", "ramp@example.com")!;',
+    'insertMany("notes", Array.from({ length: 300 }, () => ({ user_id: u.id, body: "refund", created_at: "2026-01-15 12:00:00" })));',
+  ].join("\n") });
+  await call("run_script", { project: "smoke-test", path: "scripts/batch.ts" });
+  const batchProfile = await call("profile_data", { project: "smoke-test", table: "notes" });
+  check(/looks like one batch action/.test(batchProfile) && !/notes\.created_at: \d+ rows share/.test(batchProfile), "profile_data recognises one batch action instead of flagging clamped dates");
+  await call("write_file", { project: "smoke-test", path: "server/migrations/099_clash.sql", content: "CREATE TABLE sessions (id INTEGER PRIMARY KEY, starts_at TEXT);\n" });
+  await call("write_file", { project: "smoke-test", path: "scripts/migrate.ts", content: 'import { migrate } from "../server/platform/db.ts";\nmigrate();\n' });
+  let clash = "";
+  try { await call("run_script", { project: "smoke-test", path: "scripts/migrate.ts" }); } catch (e) { clash = (e as Error).message; }
+  check(clash.includes('creates a table called "sessions"') && clash.includes("class_sessions"), "a migration reusing a built-in table name gets a clear explanation");
+  await call("delete_file", { project: "smoke-test", path: "server/migrations/099_clash.sql" });
   await call("write_file", { project: "smoke-test", path: "src/App.tsx", content: 'export default function App() {\n  return <div style={{ display: "flex" }}><nav style={{ display: "flex", gap: 8 }}>{[1, 2, 3, 4, 5, 6].map((i) => <a key={i} style={{ flex: "none", width: 120 }}>Link {i}</a>)}</nav></div>;\n}\n' });
   const wide = (await client.callTool({ name: "screenshot_app", arguments: { project: "smoke-test", width: 390 } }, undefined, { timeout: 180_000 })) as any;
   const wideText = wide.content.find((c: any) => c.type === "text")?.text ?? "";

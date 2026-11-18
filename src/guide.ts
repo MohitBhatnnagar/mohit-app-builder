@@ -84,6 +84,9 @@ Never import a package that is not installed.
 - Events that would fall in the future (a reply due tomorrow) have not happened yet: skip them. Never clamp a date
   to "now" — that piles rows onto one moment and shows as "40 seconds ago" everywhere.
 - Text must match its context (a reply to an outage ticket talks about the outage): pick text per category.
+  People's attributes must fit what happens to them too: a child doesn't get a blood-pressure review.
+- If the seed calls the app's own jobs (billing, rollups), check they cover history: jobs often only process
+  recent rows, and the older months silently stay empty.
 - Keep seeds idempotent (skip if already seeded). To re-seed: reset_data, then run_script.
 - Tell the user the demo login (email + password) so they can sign in.
 
@@ -157,6 +160,18 @@ Server-side only, needs ANTHROPIC_API_KEY. Options: { system?, maxTokens?, effor
 - list_secrets shows which keys are set and where the user should put missing ones. If a feature needs a key that
   is not set, build it anyway with a clear "not set up" message, and tell the user which key to add and where.
 - Read keys in server code with process.env.NAME. Never send a key to the browser.
+
+## Business logic checklist (the bugs screenshots don't show)
+- A dashboard number must use the same definition as the action it leads to: "needs reordering" counts stock plus
+  what's on order, "late" means past its due time, not just old.
+- Store what defines a thing instead of inferring it from current state (a product's home bin, an order's due
+  date): the inference breaks exactly when the state is empty.
+- Money: decide explicitly how payments are allocated (rent before fees, oldest first) and how fees compound. Test a
+  customer who pays late, pays partly, and catches up; the balance and fees must still make sense.
+- Anything with limited capacity (seats, slots, stock) must check and take capacity in one transaction, and test
+  two people taking the last one at the same time.
+- Read the seeded numbers like a skeptic before calling it done: if a rate looks high (a third of rents late), it is
+  usually a logic bug, not bad luck.
 
 ## Style
 Build real, polished UIs: a clear layout, loading and empty states, readable errors, works on phone width.

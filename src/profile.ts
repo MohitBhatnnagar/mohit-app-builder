@@ -64,7 +64,15 @@ export function profileData(slug: string, onlyTable?: string): string {
             const second = Number(groups[1]?.k ?? 0);
             if (Number(top.k) > Math.max(20, n * 0.005) && Number(top.k) > second * 3) {
               out.push(`  ${Number(top.k).toLocaleString("en-US")} rows share the exact timestamp ${top.v}`);
-              warnings.push(`${t}.${c.name}: ${Number(top.k)} rows share the exact timestamp ${top.v} (clamped or defaulted dates?)`);
+              // If every row at that moment belongs to one parent (one event, one invoice run), it is most likely a
+              // single batch action, e.g. cancelling an event refunds all its orders at once. Say so instead of crying wolf.
+              // (95%, not 100%: something else may happen to land in the same second.)
+              const parent = cols
+                .filter((p) => /_id$/i.test(p.name) && !p.pk)
+                .map((p) => ({ name: p.name, r: one<{ k: number; v: unknown } | undefined>(`SELECT COUNT(*) AS k, "${p.name}" AS v FROM ${id} WHERE ${col} = ? AND "${p.name}" IS NOT NULL GROUP BY "${p.name}" ORDER BY k DESC LIMIT 1`, top.v) }))
+                .find((p) => p.r && Number(p.r.k) >= Number(top.k) * 0.95);
+              if (parent) out.push(`  (${Number(parent.r!.k) === Number(top.k) ? "all" : "nearly all"} of them have ${parent.name} = ${parent.r!.v}: looks like one batch action, fine if that's what happened)`);
+              else warnings.push(`${t}.${c.name}: ${Number(top.k)} rows share the exact timestamp ${top.v} (clamped or defaulted dates?)`);
             } else {
               // Clamping to "now" piles rows onto the LATEST moment: few rows overall, but exactly the ones "recent" lists show.
               const last = one<{ k: number }>(`SELECT COUNT(*) AS k FROM ${id} WHERE ${col} = (SELECT MAX(${col}) FROM ${id})`);
