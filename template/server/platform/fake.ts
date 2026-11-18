@@ -35,6 +35,7 @@ export function createFake(seed = 42) {
   const sentenceOf = (_n?: number) => `${pick(SUBJECTS)} ${pick(VERBS)} ${pick(OBJECTS)}${pick(TAILS)}.`;
   const DAY = 86400_000;
   const seen = new Set<string>();
+  let uniqueCalls = 0, uniqueFallbacks = 0;
   const fake = {
     /** Number in [0, 1). */
     random: r,
@@ -73,9 +74,14 @@ export function createFake(seed = 42) {
      * Never loops forever: after 20 repeats it appends a number ("Nova Labs 2").
      */
     unique: (gen: () => string): string => {
+      uniqueCalls++;
       for (let i = 0; i < 20; i++) {
         const v = gen();
         if (!seen.has(v)) return seen.add(v), v;
+      }
+      // Numbered fallbacks ("Nova Labs 7") look fake on screen: say so once the pool is clearly too small.
+      if (++uniqueFallbacks === 25 && uniqueFallbacks > uniqueCalls * 0.05) {
+        console.warn(`[fake] unique() had to add numbers to ${uniqueFallbacks} of ${uniqueCalls} values so far: the pool is too small. Widen the word lists, or drop uniqueness where it isn't needed (titles can repeat; make slugs unique instead).`);
       }
       const base = gen();
       let n = 2;

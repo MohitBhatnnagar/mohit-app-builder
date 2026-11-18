@@ -59,7 +59,7 @@ async function waitUntilUp(port: number, app: RunningApp, timeoutMs = 45000): Pr
  * Ask Vite for the page and its entry module so dependency bundling happens now,
  * not during the user's (or a screenshot's) first page load. Best effort, bounded.
  */
-async function warmUp(port: number): Promise<void> {
+export async function warmUp(port: number): Promise<void> {
   const base = `http://localhost:${port}`;
   const get = (p: string) => fetch(base + p, { signal: AbortSignal.timeout(30_000) }).then((r) => r.text()).catch(() => "");
   await get("/");

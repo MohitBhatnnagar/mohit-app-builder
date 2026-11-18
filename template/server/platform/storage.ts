@@ -24,18 +24,20 @@ export function fileUrl(id: string): string {
   return `/api/files/${id}`;
 }
 
-export function saveFile(input: { name: string; type?: string; data: Buffer; userId?: number | null }): StoredFile {
+/** Save bytes as a stored file. Seeds can pass createdAt ("YYYY-MM-DD HH:MM:SS") so uploads are spread over time. */
+export function saveFile(input: { name: string; type?: string; data: Buffer; userId?: number | null; createdAt?: string }): StoredFile {
   const id = crypto.randomBytes(16).toString("hex");
   const name = path.basename(input.name).slice(0, 200) || "file";
   const type = input.type || "application/octet-stream";
   fs.writeFileSync(path.join(UPLOAD_DIR, id), input.data);
   run(
-    "INSERT INTO files (id, user_id, name, type, size) VALUES (?, ?, ?, ?, ?)",
+    "INSERT INTO files (id, user_id, name, type, size, created_at) VALUES (?, ?, ?, ?, ?, COALESCE(?, datetime('now')))",
     id,
     input.userId ?? null,
     name,
     type,
     input.data.length,
+    input.createdAt ?? null,
   );
   return { id, name, type, size: input.data.length, url: fileUrl(id) };
 }

@@ -11,11 +11,12 @@ Every app comes with these already wired up:
 | Database | SQLite (`data/app.db`), numbered SQL migrations applied on start |
 | Sign-in | Email + password, secure cookie sessions, ready-made sign-in screen |
 | File storage | Upload/download API, files kept in `data/uploads` |
-| Email | `sendEmail()`, really delivered through Resend when a key is set, otherwise kept in an outbox |
+| Email | `sendEmail()`, really delivered through Resend when a key is set, otherwise kept in an outbox; never sent to reserved test domains (example.com, .test …), so seed data is safe |
 | AI | `aiText`, `aiChat`, `aiJson`, `aiStream`: Claude in your app's server code |
 | Version history | Every app is a git repo; checkpoints, diffs and one-step restore |
 | Demo data | `server/seed.ts` + `run_script`; `createUser`, fast `insertMany`, realistic deterministic `fake` data |
-| Scheduled jobs | `every(name, minutes, fn)` for rollups, cleanups and reminders |
+| Scheduled jobs | `every(name, minutes, fn)` for rollups, cleanups, reminders and payouts |
+| PDF documents | `createPdf()`: text, wrapped paragraphs, boxes and multi-page tables for invoices, receipts, reports |
 | Packages | React Router, Recharts, Lucide icons, date-fns, zod, clsx, marked; more on demand |
 | Frontend | React 19 + Vite with hot reload |
 | Backend | Express 5 on Node, TypeScript with no build step |
@@ -117,7 +118,7 @@ Each app is a normal folder with its own git history: `projects/<name>/`. Run on
 - Restoring a checkpoint restores code, not data. The database and uploads are not versioned.
 - AI helpers use `claude-opus-5-5` by default (set `MOHIT_AI_MODEL` to change) with server-side
   refusal fallback enabled. Every AI call is billed to your Anthropic account.
-- `npm run smoke` runs 54 end-to-end checks. It strips real API keys from its environment and uses a
+- `npm run smoke` runs 58 end-to-end checks. It strips real API keys from its environment and uses a
   mock email server, so it never sends mail or spends money.
 - `start_app` and `run_script` keep each app's `server/platform/` in sync with Mohit, so platform fixes
   reach existing apps (the update is saved as a checkpoint).
@@ -133,6 +134,7 @@ local HTTP for this. Results and every issue found are in [loop/scorecard.md](lo
 | 1 | Habit tracker, finance app, team CRM | 55–61k | 67% | 13 (incl. a silent `query_db` bug) |
 | 2 | Booking SaaS, online store, AI helpdesk | 91–141k | 77% | 4 |
 | 3 | Live project tracker, video course platform, analytics | 71k–1.04M | 80% | 9 |
+| 4 | Invoicing with PDFs, team chat, multi-vendor marketplace | 81k–199k | 77% | 6 |
 
 Every app since batch 2 has started, migrated and seeded on the first try, including live updates over
 server-sent events, video streaming with seeking, and a million-event analytics app (12-month dashboard in

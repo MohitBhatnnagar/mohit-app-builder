@@ -96,7 +96,7 @@ try {
   await call("edit_file", {
     project: "smoke-test", path: "server/routes.ts",
     old_text: "export function routes(router: Router): void {",
-    new_text: 'export function routes(router: Router): void {\n  router.post("/ping", async (_req, res) => {\n    run("INSERT INTO pings DEFAULT VALUES");\n    await sendEmail({ to: "b@example.com", subject: "Ping", text: "pong" });\n    res.json({ ok: true });\n  });\n',
+    new_text: 'export function routes(router: Router): void {\n  router.post("/ping", async (_req, res) => {\n    run("INSERT INTO pings DEFAULT VALUES");\n    await sendEmail({ to: "b@customer.co", subject: "Ping", text: "pong" });\n    res.json({ ok: true });\n  });\n',
   });
   check((await call("start_app", { project: "smoke-test" })).includes("restarted"), "restart after server change");
   check((await fetch(`${url}/api/ping`, { method: "POST" })).ok, "new migration + route work");
@@ -183,7 +183,7 @@ try {
   const chart = await fetch(`${url}/src/Chart.tsx`);
   check(chart.ok && (await chart.text()).includes("recharts"), "pre-installed packages work in the frontend (recharts, lucide-react)");
   check((await fetch(`${url}/api/ping`, { method: "POST" })).ok && received.length === 1, "email is delivered through the provider API");
-  check(received[0].auth === "Bearer re_test_123" && received[0].body.from === "Smoke <smoke@example.test>" && received[0].body.to[0] === "b@example.com", "provider gets key, sender and recipient");
+  check(received[0].auth === "Bearer re_test_123" && received[0].body.from === "Smoke <smoke@example.test>" && received[0].body.to[0] === "b@customer.co", "provider gets key, sender and recipient");
   check((await call("list_emails", { project: "smoke-test" })).includes("delivered via Resend"), "list_emails shows delivery status");
   mock.close();
   const ai = await fetch(`${url}/api/ai`, { method: "POST" });
@@ -249,6 +249,28 @@ try {
   check(refusedImport.includes("Only media, document and data files"), "import_file refuses non-media files");
   fs.rmSync(media, { force: true });
   fs.rmSync(secret, { force: true });
+
+  // --- Batch 4 additions: PDFs, file dates, test-address guard, seed lint ---
+  await call("write_file", { project: "smoke-test", path: "scripts/batch4.ts", content: [
+    'import { createPdf } from "../server/platform/pdf.ts";',
+    'import { saveFile } from "../server/platform/storage.ts";',
+    'import { sendEmail, isTestAddress } from "../server/platform/email.ts";',
+    'import { get } from "../server/platform/db.ts";',
+    'const doc = createPdf();',
+    'doc.text("Report", 40, 800, { size: 18, bold: true });',
+    'const y = doc.table(40, 760, [{ label: "Item", width: 300 }, { label: "Amount", width: 100, align: "right" }], Array.from({ length: 60 }, (_, i) => [`Row ${i}`, String(i * 10)]));',
+    'const pdf = doc.toBuffer();',
+    'const f = saveFile({ name: "r.pdf", type: "application/pdf", data: pdf, createdAt: "2025-01-02 03:04:05" });',
+    'const row = get<{ created_at: string }>("SELECT created_at FROM files WHERE id = ?", f.id)!;',
+    'const sent = await sendEmail({ to: "someone@example.com", subject: "Hi", text: "x" });',
+    'console.log(`pdf=${pdf.subarray(0, 5).toString()} pages=${doc.pageCount} y=${Math.round(y)} fileDate=${row.created_at} delivered=${sent.delivered} test=${isTestAddress("a@b.test")},${isTestAddress("a@real.co")}`);',
+  ].join("\n") });
+  const b4 = await call("run_script", { project: "smoke-test", path: "scripts/batch4.ts" });
+  check(b4.includes("pdf=%PDF-") && b4.includes("pages=2"), "createPdf builds a valid multi-page PDF with a table");
+  check(b4.includes("fileDate=2025-01-02 03:04:05"), "saveFile({ createdAt }) keeps the upload date");
+  check(b4.includes("delivered=false") && b4.includes("test=true,false"), "mail to reserved test domains is never delivered, even with a provider key set");
+  await call("write_file", { project: "smoke-test", path: "scripts/trap.ts", content: 'import { fake } from "../server/platform/fake.ts";\nlet n = 0;\nfor (let i = 0; i < fake.count({ 2: 1 }); i++) n++;\nconsole.log(n);\n' });
+  check((await call("run_script", { project: "smoke-test", path: "scripts/trap.ts" })).includes("loop condition calls fake.count()"), "run_script warns about random calls in loop conditions");
 
   let badPkg = "";
   try { await call("add_package", { project: "smoke-test", package: "Not A Package!" }); } catch (e) { badPkg = (e as Error).message; }

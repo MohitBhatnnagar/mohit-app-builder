@@ -56,16 +56,22 @@ export function profileData(slug: string, onlyTable?: string): string {
           if (fut && /created|placed|sent|joined|signed|logged|posted/i.test(c.name)) warnings.push(`${t}.${c.name} has ${fut} rows dated in the future`);
           // Pile-ups: many rows with the exact same timestamp usually mean dates were clamped (e.g. to "now").
           if (/\d{2}:\d{2}/.test(sample) && n >= 30) {
-            const top = n >= 200
-              ? one<{ v: string; k: number }>(`SELECT ${col} AS v, COUNT(*) AS k FROM ${id} WHERE ${col} IS NOT NULL GROUP BY ${col} ORDER BY k DESC LIMIT 1`)
-              : { v: "", k: 0 };
-            if (Number(top.k) > Math.max(20, n * 0.005)) {
+            // Clamping makes ONE group far bigger than the rest; batch jobs (weekly payouts) make many similar groups.
+            const groups = n >= 200
+              ? q<{ v: string; k: number }>(`SELECT ${col} AS v, COUNT(*) AS k FROM ${id} WHERE ${col} IS NOT NULL GROUP BY ${col} ORDER BY k DESC LIMIT 2`)
+              : [];
+            const top = groups[0] ?? { v: "", k: 0 };
+            const second = Number(groups[1]?.k ?? 0);
+            if (Number(top.k) > Math.max(20, n * 0.005) && Number(top.k) > second * 3) {
               out.push(`  ${Number(top.k).toLocaleString("en-US")} rows share the exact timestamp ${top.v}`);
               warnings.push(`${t}.${c.name}: ${Number(top.k)} rows share the exact timestamp ${top.v} (clamped or defaulted dates?)`);
             } else {
               // Clamping to "now" piles rows onto the LATEST moment: few rows overall, but exactly the ones "recent" lists show.
               const last = one<{ k: number }>(`SELECT COUNT(*) AS k FROM ${id} WHERE ${col} = (SELECT MAX(${col}) FROM ${id})`);
-              if (Number(last.k) >= 10) {
+              // Batch jobs (e.g. a weekly payout run) put many rows on each run's timestamp: only warn when the latest
+              // group is far bigger than every other group.
+              const otherMax = Number(one<{ k: number | null }>(`SELECT MAX(k) AS k FROM (SELECT COUNT(*) AS k FROM ${id} WHERE ${col} < (SELECT MAX(${col}) FROM ${id}) GROUP BY ${col})`).k ?? 0);
+              if (Number(last.k) >= 10 && Number(last.k) > otherMax * 3) {
                 out.push(`  ${Number(last.k)} rows share the latest timestamp ${r.hi}`);
                 warnings.push(`${t}.${c.name}: ${Number(last.k)} rows share the latest timestamp ${r.hi} (dates clamped to "now"?)`);
               }
@@ -97,7 +103,8 @@ export function profileData(slug: string, onlyTable?: string): string {
         if (distinct <= 12) {
           const d = q<{ v: string; n: number }>(`SELECT ${col} AS v, COUNT(*) AS n FROM ${id} GROUP BY v ORDER BY n DESC`);
           out.push(`- ${c.name}: ${d.map((x) => `${x.v ?? "NULL"} ${Math.round((Number(x.n) / n) * 100)}%`).join(", ")}`);
-          if (distinct === 1 && n > 20) warnings.push(`${t}.${c.name} has the same value in every row`);
+          // A single value is suspicious for statuses/categories, normal for things like a file type or currency.
+          if (distinct === 1 && n > 20 && /(status|state|stage|category|kind|role|priority|level|plan)$/i.test(c.name)) warnings.push(`${t}.${c.name} has the same value in every row`);
         } else {
           const dupes = n - distinct;
           out.push(`- ${c.name}: ${distinct.toLocaleString("en-US")} distinct${dupes > n * 0.5 && n > 100 ? " (many repeats)" : ""}${nullNote}`);

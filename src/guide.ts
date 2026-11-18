@@ -91,8 +91,8 @@ Never import a package that is not installed.
 ## File storage — import { saveFile, fileUrl } from "./platform/storage.ts"
 - Frontend upload: await uploadFile(file) from src/api.ts → { id, name, url, size, type }.
 - Built-in endpoints: POST /api/files (raw body, x-filename header, signed-in users only), GET /api/files/:id.
-- Server-side: saveFile({ name, type, data: Buffer, userId }) → same record. Seeds can generate files in code
-  (SVG images, simple PDFs) and save them this way.
+- Server-side: saveFile({ name, type, data: Buffer, userId, createdAt? }) → same record. Seeds can generate files
+  in code (SVG images, PDFs with createPdf) and save them this way; pass createdAt so uploads spread over time.
 - Uploads are limited to 25 MB (a clear 413 error beyond that); the user can raise it with MAX_UPLOAD_MB in .env.
 - Downloads support byte ranges, so <video src={url}> streams and seeks. Anyone with a file URL can open it.
 
@@ -105,6 +105,8 @@ Never import a package that is not installed.
 - await sendEmail({ to, subject, text, html?, replyTo? }) → { id, delivered }.
 - With RESEND_API_KEY and EMAIL_FROM set, mail is really delivered (Resend). Otherwise it is only saved to the outbox.
   list_emails shows every message and its delivery status. Throws if real delivery fails.
+- Mail to reserved test domains (example.com, *.test, *.invalid …) is never delivered, so seed data with fake
+  addresses is safe even when a real key is set. Use those domains for every fake person.
 
 ## AI (Claude) — import { aiText, aiChat, aiJson, aiStream } from "./platform/ai.ts"
 Server-side only, needs ANTHROPIC_API_KEY. Options: { system?, maxTokens?, effort?: "low" | "medium" | "high" }.
@@ -116,6 +118,13 @@ Server-side only, needs ANTHROPIC_API_KEY. Options: { system?, maxTokens?, effor
 - Errors are AiError with an HTTP status and a readable message; in async routes just await and let them throw.
 - Use effort "low" for quick chat or classification, "medium" by default, "high" for hard reasoning.
 - Every AI call costs the user money: call it on user actions, never in loops over many rows or on every page load.
+
+## PDF documents — import { createPdf } from "./platform/pdf.ts"
+- const doc = createPdf(); doc.text(s, x, y, { size, bold, color: [r,g,b], align: "right", maxWidth });
+  doc.paragraph(s, x, y, width) (wraps, returns next y), doc.line(...), doc.rect(x, y, w, h, [r,g,b]),
+  doc.table(x, y, [{ label, width, align }], rows) (header row, continues on new pages, returns next y),
+  doc.addPage(). A4 in points (595 × 842), origin bottom-left. Send with Content-Type application/pdf.
+- Use it for invoices, receipts, certificates and reports; never hand-write PDF syntax.
 
 ## Scheduled jobs — import { every } from "./platform/jobs.ts"
 - every("name", minutes, fn) in server/routes.ts runs fn on a timer inside the server (first run ~2 s after start).

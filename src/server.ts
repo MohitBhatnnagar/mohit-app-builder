@@ -17,7 +17,7 @@ import {
   resolveInProject,
   syncPlatform,
 } from "./projects.ts";
-import { appLogs, appStatus, runScript, startApp, stopAll, stopApp } from "./runner.ts";
+import { appLogs, appStatus, runScript, startApp, stopAll, stopApp, warmUp } from "./runner.ts";
 import { checkpoint, diffSince, listCheckpoints, restoreCheckpoint } from "./history.ts";
 import { addPackage } from "./packages.ts";
 import { screenshot } from "./screenshot.ts";
@@ -332,6 +332,8 @@ server.registerTool(
   },
   safe(async ({ project, path: pagePath, width, height, full_page, signed_in_as, actions }) => {
     const url = appStatus(project).url ?? (await startApp(project)).url;
+    // Code written since start may import new packages: let Vite bundle them now, not mid-screenshot.
+    await warmUp(Number(new URL(url).port)).catch(() => {});
     const { png, notes: allNotes } = await screenshot(project, url, { path: pagePath, width, height, fullPage: full_page, signedInAs: signed_in_as, actions });
     // Informational notes (in parentheses) are not problems.
     const notes = allNotes.filter((n) => !n.startsWith("("));
@@ -362,8 +364,11 @@ server.registerTool(
     }
     const abs = resolveInProject(project, normalised);
     if (!fs.existsSync(abs)) throw new Error(`${normalised} does not exist. Write it first.`);
+    // A random call in a loop condition re-rolls on every pass (a bug the guide warns about, and that still slips through).
+    const lint = fs.readFileSync(abs, "utf8").split(/\r?\n/).flatMap((line, i) =>
+      /for\s*\([^;]*;[^;]*[<>]=?\s*(?:Number\()?\s*fake\.(count|int|weighted|pick|float)\(/.test(line) ? [`line ${i + 1}: loop condition calls fake.${RegExp.$1}() on every pass; compute it once before the loop`] : []);
     const r = await runScript(project, normalised, timeout_seconds * 1000);
-    const summary = `${normalised} exited with code ${r.code} after ${(r.ms / 1000).toFixed(1)}s.`;
+    const summary = `${normalised} exited with code ${r.code} after ${(r.ms / 1000).toFixed(1)}s.${lint.length ? `\nWarning (likely bug):\n${lint.join("\n")}` : ""}`;
     return r.code === 0 ? text(`${summary}\n${r.output}`) : fail(`${summary}\n${r.output}`);
   }),
 );

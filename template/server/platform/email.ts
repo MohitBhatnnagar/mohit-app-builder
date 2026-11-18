@@ -27,6 +27,15 @@ export function emailDeliveryEnabled(): boolean {
   return Boolean(process.env.RESEND_API_KEY && process.env.EMAIL_FROM);
 }
 
+/**
+ * Reserved test domains (RFC 2606/6761) never receive real mail. Seeds use them for fake people,
+ * so this stops a demo database from emailing strangers once a real email key is set.
+ */
+export function isTestAddress(address: string): boolean {
+  const domain = address.trim().toLowerCase().split("@")[1] ?? "";
+  return /(^|\.)(example\.(com|net|org)|test|example|invalid|localhost)$/.test(domain);
+}
+
 async function deliver(email: Email): Promise<string> {
   const res = await fetch(process.env.RESEND_API_URL ?? "https://api.resend.com/emails", {
     method: "POST",
@@ -55,10 +64,14 @@ export async function sendEmail(email: Email): Promise<SendResult> {
   let status = "saved to outbox only (set RESEND_API_KEY and EMAIL_FROM to deliver)";
   let providerId: string | undefined;
   let error: Error | undefined;
-  if (emailDeliveryEnabled()) {
+  const recipients = Array.isArray(email.to) ? email.to : [email.to];
+  const real = recipients.filter((r) => !isTestAddress(r));
+  if (emailDeliveryEnabled() && real.length === 0) {
+    status = "not delivered: test address (example.com, .test …); saved to outbox";
+  } else if (emailDeliveryEnabled()) {
     try {
-      providerId = await deliver(email);
-      status = "delivered via Resend";
+      providerId = await deliver({ ...email, to: real });
+      status = real.length < recipients.length ? `delivered via Resend (skipped ${recipients.length - real.length} test address)` : "delivered via Resend";
     } catch (err) {
       error = err as Error;
       status = `failed: ${error.message}`;
