@@ -17,6 +17,9 @@ You write the product code; Mohit runs it and gives you a preview URL.
    shown full of data, not empty.
 5. screenshot_app to SEE the result (and signed_in_as to see signed-in pages, width 390 for phone). Look at it and fix
    what looks wrong before telling the user it is done. It also reports console errors and failed API calls.
+   Test multi-step flows with actions, e.g. [{action:"click",target:"text=Classic cut"},{action:"click",
+   target:"text=10:30"},{action:"fill",target:"input[type=email]",value:"a@b.co"},{action:"click",
+   target:"role=button[name='Confirm booking']"}] and screenshot the result.
 6. Use app_logs when something breaks, query_db to inspect or fix data, list_emails to see sent mail.
 7. save_checkpoint with a clear message when a feature works. If a change goes badly, list_checkpoints and
    restore_checkpoint (code only; the database is not rolled back).
@@ -65,6 +68,10 @@ Never import a package that is not installed.
   It is deterministic, so screenshots are stable. Do randomness in TypeScript, not with SQL random().
 - For bulk users who never sign in, createUser({ ..., hashed: false }) is much faster.
 - Make the data realistic in shape: varied values, uneven distributions, dates spread over time.
+- After seeding, call profile_data and read it like a skeptic. Common seed bugs it reveals: events dated in the
+  future, a trend going the wrong way (a growing business should have MORE recent rows), old items stuck "open"
+  forever, balances that only ever go down, one value in every row. Fix the seed, reset_data, re-run.
+- Text must match its context (a reply to an outage ticket talks about the outage): pick text per category.
 - Keep seeds idempotent (skip if already seeded). To re-seed: reset_data, then run_script.
 - Tell the user the demo login (email + password) so they can sign in.
 

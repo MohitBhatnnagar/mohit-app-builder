@@ -196,6 +196,23 @@ try {
   const shotText = shot.content.find((c: any) => c.type === "text")?.text ?? "";
   check(!shot.isError && img && img.data.length > 5000, `screenshot_app returns an image (${shotText.split("\n")[0]})`);
   fs.writeFileSync(path.join(root, "scripts", "last-screenshot.png"), Buffer.from(img.data, "base64"));
+  // --- Screenshot actions and data profiling (found in test loop batch 2) ---
+  const flow = (await client.callTool({ name: "screenshot_app", arguments: { project: "smoke-test", actions: [
+    { action: "fill", target: "input[type=email]", value: "a@example.com" },
+    { action: "fill", target: "input[type=password]", value: "password123" },
+    { action: "click", target: "role=button[name='Sign in']" },
+    { action: "fill", target: "input[placeholder='Write a note…']", value: "Note from a screenshot flow" },
+    { action: "click", target: "role=button[name='Add']" },
+  ] } })) as any;
+  const flowText = flow.content.find((c: any) => c.type === "text")?.text ?? "";
+  const stepFailed = /step \d+ \(.*\) failed/.test(flowText);
+  check(!stepFailed && (await call("query_db", { project: "smoke-test", sql: "SELECT COUNT(*) AS n FROM notes WHERE body = 'Note from a screenshot flow'" })).includes('"n": 1'), `screenshot actions sign in and submit a form${stepFailed ? ` [${flowText.replace(/\n/g, " | ")}]` : ""}`);
+  const broken = (await client.callTool({ name: "screenshot_app", arguments: { project: "smoke-test", actions: [{ action: "click", target: "text=No such button" }] } })) as any;
+  check((broken.content.find((c: any) => c.type === "text")?.text ?? "").includes("step 1 (click text=No such button) failed"), "a failing screenshot step is reported");
+  await call("query_db", { project: "smoke-test", sql: "INSERT INTO notes (user_id, body, created_at) VALUES (1, 'from the future', '2099-01-01 00:00:00')" });
+  const profile = await call("profile_data", { project: "smoke-test" });
+  check(profile.includes("notes.created_at has 1 rows dated in the future") && profile.includes("## notes:"), "profile_data flags future-dated rows");
+
   let badPkg = "";
   try { await call("add_package", { project: "smoke-test", package: "Not A Package!" }); } catch (e) { badPkg = (e as Error).message; }
   check(badPkg.includes("not a valid npm package name"), "add_package rejects invalid names");

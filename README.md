@@ -89,7 +89,8 @@ The AI will call `create_project`, write the code, call `start_app`, check it wi
 | `list_projects` / `create_project` | Manage apps |
 | `list_files` / `read_file` / `write_file` / `edit_file` / `delete_file` | Edit app code |
 | `start_app` / `stop_app` / `app_logs` | Run apps, get preview URLs, read errors |
-| `screenshot_app` | See a page in headless Edge/Chrome (any width, optionally signed in), plus console errors |
+| `screenshot_app` | See a page in headless Edge/Chrome (any width, optionally signed in), run click/fill steps through a flow first, and get console errors and failed requests |
+| `profile_data` | Sanity-check seeded data: counts, date ranges, future dates, monthly trend, stale open items, distributions |
 | `save_checkpoint` / `list_checkpoints` / `checkpoint_diff` / `restore_checkpoint` | Version history |
 | `add_package` | Install an npm package (install scripts disabled) |
 | `run_script` / `reset_data` | Run seed or data-fix scripts (with a timeout); wipe an app's data to start fresh |
@@ -114,7 +115,7 @@ Each app is a normal folder with its own git history: `projects/<name>/`. Run on
 - Restoring a checkpoint restores code, not data. The database and uploads are not versioned.
 - AI helpers use `claude-opus-5-5` by default (set `MOHIT_AI_MODEL` to change) with server-side
   refusal fallback enabled. Every AI call is billed to your Anthropic account.
-- `npm run smoke` runs 45 end-to-end checks. It strips real API keys from its environment and uses a
+- `npm run smoke` runs 48 end-to-end checks. It strips real API keys from its environment and uses a
   mock email server, so it never sends mail or spends money.
 - `start_app` and `run_script` keep each app's `server/platform/` in sync with Mohit, so platform fixes
   reach existing apps (the update is saved as a checkpoint).
@@ -125,8 +126,14 @@ Mohit is improved by building real apps with it, filling them with tens of thous
 rows, screenshotting them, and fixing whatever fails. `scripts/bridge.ts` drives the MCP server over
 local HTTP for this. Results and every issue found are in [loop/scorecard.md](loop/scorecard.md).
 
-Batch 1 (habit tracker, finance app, team CRM; 55–60k rows each): 67% of checks passed on the first
-attempt; 13 Mohit issues were found and fixed, including a silent `query_db` bug.
+| Batch | Apps | Rows per app | First-pass checks | Mohit issues found |
+| --- | --- | --- | --- | --- |
+| 1 | Habit tracker, finance app, team CRM | 55–61k | 67% | 13 (incl. a silent `query_db` bug) |
+| 2 | Booking SaaS, online store, AI helpdesk | 91–141k | 77% | 4 |
+
+Every batch-2 app started, migrated and seeded on the first try. The remaining first-pass failures were
+mostly in the AI-written app code (unrealistic seed data, display slips), which `profile_data` and
+screenshot flows now surface earlier.
 
 ## Roadmap
 

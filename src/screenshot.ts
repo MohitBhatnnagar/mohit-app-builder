@@ -35,12 +35,48 @@ function sessionFor(slug: string, email: string): string {
   }
 }
 
+export interface ShotAction {
+  action: "click" | "fill" | "press" | "wait" | "goto";
+  /** Playwright selector: CSS ("button.primary"), text ("text=Classic cut") or role ("role=button[name='Book']"). For goto: a path. */
+  target?: string;
+  /** Text to type (fill), key name (press, e.g. "Enter"), or milliseconds (wait). */
+  value?: string;
+}
+
 export interface ShotOptions {
   path: string;
   width: number;
   height: number;
   fullPage: boolean;
   signedInAs?: string;
+  actions?: ShotAction[];
+}
+
+async function runActions(page: import("playwright-core").Page, baseUrl: string, actions: ShotAction[], notes: string[]): Promise<void> {
+  for (const [i, a] of actions.entries()) {
+    const step = `step ${i + 1} (${a.action}${a.target ? ` ${a.target}` : ""})`;
+    try {
+      if (a.action === "wait") {
+        await page.waitForTimeout(Math.min(10_000, Number(a.value ?? 500)));
+        continue;
+      }
+      if (a.action === "goto") {
+        await page.goto(new URL(a.target ?? "/", baseUrl).toString(), { waitUntil: "load" });
+      } else {
+        if (!a.target) throw new Error("needs a target selector");
+        const el = page.locator(a.target).first();
+        await el.waitFor({ state: "visible", timeout: 8_000 });
+        if (a.action === "click") await el.click();
+        else if (a.action === "fill") await el.fill(a.value ?? "");
+        else if (a.action === "press") await el.press(a.value ?? "Enter");
+      }
+      await page.waitForLoadState("networkidle", { timeout: 5_000 }).catch(() => {});
+      await page.waitForTimeout(150);
+    } catch (err) {
+      notes.push(`${step} failed: ${(err as Error).message.split("\n")[0]}`);
+      return; // later steps depend on this one
+    }
+  }
 }
 
 export async function screenshot(slug: string, baseUrl: string, opts: ShotOptions): Promise<{ png: string; notes: string[] }> {
@@ -83,6 +119,7 @@ export async function screenshot(slug: string, baseUrl: string, opts: ShotOption
     await page.goto(target, { waitUntil: "load", timeout: 30_000 });
     // Let React render and initial API calls settle.
     await page.waitForLoadState("networkidle", { timeout: 5_000 }).catch(() => {});
+    if (opts.actions?.length) await runActions(page, baseUrl, opts.actions, notes);
     await page.addStyleTag({ content: "*,*::before,*::after{animation-duration:0s!important;animation-delay:0s!important;transition-duration:0s!important;transition-delay:0s!important}" }).catch(() => {});
     // Let any remaining Web Animations finish (bounded), then one more paint.
     await page

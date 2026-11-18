@@ -55,6 +55,23 @@ async function waitUntilUp(port: number, app: RunningApp, timeoutMs = 45000): Pr
   throw new Error(`The app did not answer on port ${port} within ${timeoutMs / 1000}s.`);
 }
 
+/**
+ * Ask Vite for the page and its entry module so dependency bundling happens now,
+ * not during the user's (or a screenshot's) first page load. Best effort, bounded.
+ */
+async function warmUp(port: number): Promise<void> {
+  const base = `http://localhost:${port}`;
+  const get = (p: string) => fetch(base + p, { signal: AbortSignal.timeout(30_000) }).then((r) => r.text()).catch(() => "");
+  await get("/");
+  const main = await get("/src/main.tsx");
+  // Follow the app's own modules one level deep so their imports are discovered too.
+  const local = [...main.matchAll(/from\s+["'](\/src\/[^"'?]+)/g)].map((m) => m[1]);
+  await Promise.all(local.map(get));
+  // Give the optimiser a moment to finish a re-bundle triggered by newly discovered deps.
+  await new Promise((r) => setTimeout(r, 800));
+  await get("/src/main.tsx");
+}
+
 export async function startApp(slug: string): Promise<{ url: string; restarted: boolean }> {
   const restarted = running.has(slug);
   if (restarted) await stopApp(slug);
@@ -87,6 +104,7 @@ export async function startApp(slug: string): Promise<{ url: string; restarted: 
   running.set(slug, app);
   try {
     await waitUntilUp(port, app);
+    await warmUp(port);
   } catch (err) {
     await stopApp(slug);
     const tail = app.logs.slice(-40).join("\n");

@@ -22,6 +22,7 @@ import { checkpoint, diffSince, listCheckpoints, restoreCheckpoint } from "./his
 import { addPackage } from "./packages.ts";
 import { screenshot } from "./screenshot.ts";
 import { secretsReport } from "./secrets.ts";
+import { profileData } from "./profile.ts";
 
 const server = new McpServer(
   { name: "mohit", version: "0.1.0" },
@@ -278,11 +279,22 @@ server.registerTool(
       height: z.number().int().min(320).max(2560).default(800),
       full_page: z.boolean().default(false),
       signed_in_as: z.string().optional().describe("Email of an existing app user to view the page as."),
+      actions: z
+        .array(
+          z.object({
+            action: z.enum(["click", "fill", "press", "wait", "goto"]),
+            target: z.string().optional().describe("Selector: CSS, text=Visible text, or role=button[name='Save']. For goto: a path."),
+            value: z.string().optional().describe("fill: text to type; press: key like Enter; wait: milliseconds."),
+          }),
+        )
+        .max(25)
+        .optional()
+        .describe("Steps to run before the screenshot, to test flows: open a menu, fill a form, submit, go to step 2. A failing step is reported and stops the rest."),
     },
   },
-  safe(async ({ project, path: pagePath, width, height, full_page, signed_in_as }) => {
+  safe(async ({ project, path: pagePath, width, height, full_page, signed_in_as, actions }) => {
     const url = appStatus(project).url ?? (await startApp(project)).url;
-    const { png, notes } = await screenshot(project, url, { path: pagePath, width, height, fullPage: full_page, signedInAs: signed_in_as });
+    const { png, notes } = await screenshot(project, url, { path: pagePath, width, height, fullPage: full_page, signedInAs: signed_in_as, actions });
     return {
       content: [
         { type: "image", data: png, mimeType: "image/png" },
@@ -313,6 +325,15 @@ server.registerTool(
     const summary = `${normalised} exited with code ${r.code} after ${(r.ms / 1000).toFixed(1)}s.`;
     return r.code === 0 ? text(`${summary}\n${r.output}`) : fail(`${summary}\n${r.output}`);
   }),
+);
+
+server.registerTool(
+  "profile_data",
+  {
+    description: "Sanity-check an app's data after seeding: row counts, date ranges (future dates flagged), monthly trend, status distributions, numeric ranges, NULL rates. Use it to catch unrealistic seed data before screenshots.",
+    inputSchema: { project, table: z.string().optional().describe("Only this table.") },
+  },
+  safe(({ project, table }) => text(profileData(project, table))),
 );
 
 server.registerTool(
