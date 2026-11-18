@@ -36,15 +36,39 @@ export function insertMany(table: string, rows: Record<string, SqlParam | boolea
   const cols = Object.keys(rows[0]);
   for (const c of cols) if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(c)) throw new Error(`Bad column name: ${c}`);
   const stmt = db.prepare(`INSERT INTO ${table} (${cols.join(", ")}) VALUES (${cols.map(() => "?").join(", ")})`);
+  const values = (row: Record<string, SqlParam | boolean | undefined>) =>
+    cols.map((c) => {
+      const v = row[c];
+      return typeof v === "boolean" ? (v ? 1 : 0) : (v ?? null);
+    });
   return transaction(() => {
-    for (const row of rows) {
-      stmt.run(...cols.map((c) => {
-        const v = row[c];
-        return typeof v === "boolean" ? (v ? 1 : 0) : (v ?? null);
-      }));
+    for (let i = 0; i < rows.length; i++) {
+      try {
+        stmt.run(...values(rows[i]));
+      } catch (err) {
+        throw new Error(explainInsertError(table, cols, rows[i], i, rows.length, err as Error), { cause: err });
+      }
     }
     return rows.length;
   });
+}
+
+/** Turn SQLite's terse constraint errors into a message that says which row and which value broke it. */
+function explainInsertError(table: string, cols: string[], row: Record<string, unknown>, index: number, count: number, err: Error): string {
+  const shown = JSON.stringify(row, (_k, v) => (typeof v === "string" && v.length > 60 ? v.slice(0, 60) + "…" : v));
+  let why = err.message;
+  if (/FOREIGN KEY/i.test(err.message)) {
+    const fks = db.prepare(`PRAGMA foreign_key_list(${table})`).all() as { table: string; from: string; to: string | null }[];
+    const missing = fks.filter((fk) => {
+      const v = row[fk.from];
+      if (v === null || v === undefined || !cols.includes(fk.from)) return false;
+      return !db.prepare(`SELECT 1 FROM ${fk.table} WHERE ${fk.to ?? "rowid"} = ? LIMIT 1`).get(v as SqlParam);
+    });
+    why = missing.length
+      ? missing.map((fk) => `${table}.${fk.from} = ${JSON.stringify(row[fk.from])} but ${fk.table} has no row with ${fk.to ?? "id"} = ${JSON.stringify(row[fk.from])} (insert ${fk.table} first, or check the id)`).join("; ")
+      : `${err.message} (a referenced row does not exist)`;
+  }
+  return `insertMany("${table}") failed on row ${index + 1} of ${count}: ${why}. Nothing was inserted. Row: ${shown.length > 400 ? shown.slice(0, 400) + "…" : shown}`;
 }
 
 /** Run fn inside a transaction; rolls back if it throws. */

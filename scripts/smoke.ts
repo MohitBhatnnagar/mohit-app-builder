@@ -272,6 +272,32 @@ try {
   await call("write_file", { project: "smoke-test", path: "scripts/trap.ts", content: 'import { fake } from "../server/platform/fake.ts";\nlet n = 0;\nfor (let i = 0; i < fake.count({ 2: 1 }); i++) n++;\nconsole.log(n);\n' });
   check((await call("run_script", { project: "smoke-test", path: "scripts/trap.ts" })).includes("loop condition calls fake.count()"), "run_script warns about random calls in loop conditions");
 
+  // --- Batch 5 additions: typecheck, explained insert errors, callback lint, name pool, sideways-scroll check ---
+  check((await call("typecheck", { project: "smoke-test" })).includes("No type errors"), "typecheck passes on the starter app");
+  await call("write_file", { project: "smoke-test", path: "src/Broken.tsx", content: 'import { Linkedin } from "lucide-react";\nexport const B = () => <Linkedin />;\n' });
+  let tc = "";
+  try { await call("typecheck", { project: "smoke-test" }); } catch (e) { tc = (e as Error).message; }
+  check(/src\/Broken\.tsx:1\s+TS2305/.test(tc) && tc.includes("will break at runtime"), "typecheck finds an import that doesn't exist and flags it as a runtime break");
+  await call("delete_file", { project: "smoke-test", path: "src/Broken.tsx" });
+  await call("write_file", { project: "smoke-test", path: "scripts/batch5.ts", content: [
+    'import { insertMany } from "../server/platform/db.ts";',
+    'import { fake } from "../server/platform/fake.ts";',
+    'const names = new Set(Array.from({ length: 5000 }, () => fake.fullName()));',
+    'console.log(`names=${names.size}`);',
+    'const ids = [1, 2, 3];',
+    'const hit = ids.find((x) => x === fake.pick(ids));',
+    'console.log(`hit=${hit ?? "none"}`);',
+    'try { insertMany("notes", [{ user_id: 999999, body: "orphan" }]); } catch (e) { console.log((e as Error).message); }',
+  ].join("\n") });
+  const b5 = await call("run_script", { project: "smoke-test", path: "scripts/batch5.ts" });
+  check(Number(/names=(\d+)/.exec(b5)?.[1]) > 3000, `fake.fullName() has a wide pool (${/names=(\d+)/.exec(b5)?.[1]} distinct in 5,000)`);
+  check(b5.includes(".find() compares every element with a new fake.pick() roll"), "run_script warns about re-rolling inside a find() callback");
+  check(b5.includes('insertMany("notes") failed on row 1 of 1: notes.user_id = 999999 but users has no row with id = 999999'), "insertMany explains which reference is missing");
+  await call("write_file", { project: "smoke-test", path: "src/App.tsx", content: 'export default function App() {\n  return <div style={{ display: "flex" }}><nav style={{ display: "flex", gap: 8 }}>{[1, 2, 3, 4, 5, 6].map((i) => <a key={i} style={{ flex: "none", width: 120 }}>Link {i}</a>)}</nav></div>;\n}\n' });
+  const wide = (await client.callTool({ name: "screenshot_app", arguments: { project: "smoke-test", width: 390 } })) as any;
+  const wideText = wide.content.find((c: any) => c.type === "text")?.text ?? "";
+  check(/scrolls sideways/.test(wideText) && wideText.includes("<nav>"), "screenshot_app reports pages that scroll sideways and names the culprit");
+
   let badPkg = "";
   try { await call("add_package", { project: "smoke-test", package: "Not A Package!" }); } catch (e) { badPkg = (e as Error).message; }
   check(badPkg.includes("not a valid npm package name"), "add_package rejects invalid names");

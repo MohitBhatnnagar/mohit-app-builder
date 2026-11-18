@@ -10,13 +10,15 @@ You write the product code; Mohit runs it and gives you a preview URL.
 ## Workflow
 1. create_project → a working starter app (sign-in + notes demo).
 2. Read the files you will change (list_files, read_file). Start with server/routes.ts, server/migrations/, src/App.tsx.
-3. Write code with write_file / edit_file.
+3. Write code with write_file / edit_file, then typecheck. Node runs TypeScript without checking it, so a wrong
+   import (e.g. an icon that does not exist) only fails in the browser; typecheck finds it in seconds.
 4. start_app → preview URL. Every start applies new migrations and saves a checkpoint. Call start_app again after
    server changes; frontend changes hot-reload without a restart.
 4b. Seed realistic demo data: write server/seed.ts (see "Demo data") and run it with run_script. Apps should be
    shown full of data, not empty.
 5. screenshot_app to SEE the result (and signed_in_as to see signed-in pages, width 390 for phone). Look at it and fix
-   what looks wrong before telling the user it is done. It also reports console errors and failed API calls.
+   what looks wrong before telling the user it is done. It also reports console errors, failed API calls and pages
+   that scroll sideways (with the elements that are too wide).
    Test multi-step flows with actions, e.g. [{action:"click",target:"text=Classic cut"},{action:"click",
    target:"text=10:30"},{action:"fill",target:"input[type=email]",value:"a@b.co"},{action:"click",
    target:"role=button[name='Confirm booking']"}] and screenshot the result.
@@ -35,6 +37,11 @@ Pre-installed: react, react-dom, express, vite, plus:
 ${Object.entries(BUILTIN_PACKAGES).map(([n, d]) => `- ${n}: ${d}`).join("\n")}
 Prefer these and Node built-ins. If the app truly needs something else, add_package installs it (then start_app).
 Never import a package that is not installed.
+- lucide-react has no brand logos (no Linkedin, Github, Twitter, Facebook icons): use Link2, Globe, Mail, AtSign.
+
+## Express 5 routes
+- No regex in paths: "/users/:list(followers|following)" throws at startup. Register two routes (or check the param).
+- Wildcards need a name: "/files/*path", not "/files/*". req.params values are typed string | string[]: wrap in String().
 
 ## Server TypeScript rules (Node strips types; it does not compile)
 - Relative imports MUST include the .ts extension: import { db } from "./platform/db.ts".
@@ -135,6 +142,11 @@ Server-side only, needs ANTHROPIC_API_KEY. Options: { system?, maxTokens?, effor
   aggregate into daily rollup tables (one row per day per dimension), refresh them with every(), and read
   long date ranges from the rollups. Check with timings: list/dashboard endpoints should answer in < 300 ms.
 - Index the columns you filter and sort by; query_db with "EXPLAIN QUERY PLAN SELECT ..." shows index use.
+  If the plan uses an index on a column most rows share (e.g. reply_to IS NULL, status = 'active') and then
+  "USE TEMP B-TREE FOR ORDER BY", SQLite is scanning half the table: write +col (a unary plus) for that column so it
+  uses a better index instead. This took a feed query from 170 ms to 3 ms.
+- Text search over many rows: use SQLite FTS5 (CREATE VIRTUAL TABLE ... USING fts5, kept in sync with triggers), not
+  LIKE '%word%'. Quote each user word ("word") so FTS syntax in the input can't break the query.
 
 ## Media files
 - write_file is text only. If the user has images, videos or documents to use, ask for the file path and use
@@ -148,4 +160,8 @@ Server-side only, needs ANTHROPIC_API_KEY. Options: { system?, maxTokens?, effor
 
 ## Style
 Build real, polished UIs: a clear layout, loading and empty states, readable errors, works on phone width.
+- Effects return nothing or a cleanup function: write useEffect(() => { window.scrollTo(0, 0); }, [path]) with braces.
+  An arrow that returns a value crashes React (scrollTo returns a Promise in current browsers).
+- Phone layouts: flex and grid children need min-width: 0 to shrink (grid columns minmax(0, 1fr)); give a top nav
+  row overflow-x: auto. Check every main page at width 390.
 `;

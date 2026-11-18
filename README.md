@@ -91,7 +91,8 @@ The AI will call `create_project`, write the code, call `start_app`, check it wi
 | `list_projects` / `create_project` | Manage apps |
 | `list_files` / `read_file` / `write_file` / `edit_file` / `delete_file` | Edit app code |
 | `start_app` / `stop_app` / `app_logs` | Run apps, get preview URLs, read errors |
-| `screenshot_app` | See a page in headless Edge/Chrome (any width, optionally signed in), run click/fill steps through a flow first, and get console errors and failed requests |
+| `screenshot_app` | See a page in headless Edge/Chrome (any width, optionally signed in), run click/fill steps through a flow first, and get console errors, failed requests and sideways-scrolling layouts |
+| `typecheck` | Type-check an app with TypeScript in about a second; broken imports and unknown names are listed first |
 | `profile_data` | Sanity-check seeded data: counts, date ranges, future dates, monthly trend, stale open items, distributions |
 | `save_checkpoint` / `list_checkpoints` / `checkpoint_diff` / `restore_checkpoint` | Version history |
 | `add_package` | Install an npm package (install scripts disabled) |
@@ -118,7 +119,7 @@ Each app is a normal folder with its own git history: `projects/<name>/`. Run on
 - Restoring a checkpoint restores code, not data. The database and uploads are not versioned.
 - AI helpers use `claude-opus-5-5` by default (set `MOHIT_AI_MODEL` to change) with server-side
   refusal fallback enabled. Every AI call is billed to your Anthropic account.
-- `npm run smoke` runs 58 end-to-end checks. It strips real API keys from its environment and uses a
+- `npm run smoke` runs 64 end-to-end checks. It strips real API keys from its environment and uses a
   mock email server, so it never sends mail or spends money.
 - `start_app` and `run_script` keep each app's `server/platform/` in sync with Mohit, so platform fixes
   reach existing apps (the update is saved as a checkpoint).
@@ -135,12 +136,15 @@ local HTTP for this. Results and every issue found are in [loop/scorecard.md](lo
 | 2 | Booking SaaS, online store, AI helpdesk | 91–141k | 77% | 4 |
 | 3 | Live project tracker, video course platform, analytics | 71k–1.04M | 80% | 9 |
 | 4 | Invoicing with PDFs, team chat, multi-vendor marketplace | 81k–199k | 77% | 6 |
+| 5 | Recruiting tracker, restaurant POS with live kitchen display, social network | 186k–2.55M | 60% | 7 |
 
-Every app since batch 2 has started, migrated and seeded on the first try, including live updates over
+Every app since batch 2 has started and migrated on the first try, including live updates over
 server-sent events, video streaming with seeking, and a million-event analytics app (12-month dashboard in
 257 ms after rollups). The remaining first-pass failures are mostly in the AI-written app code (seed
 realism, phone layouts, performance choices), which `profile_data`, screenshot flows and the guide now
-surface earlier.
+surface earlier. Batch 5 was the hardest yet (a 2.5-million-row social network with live updates among them) and
+scored lowest; its fixes target the bugs that only showed up in the browser: a `typecheck` tool, explained
+`insertMany` errors, and phone-overflow detection in screenshots.
 
 ## Roadmap
 

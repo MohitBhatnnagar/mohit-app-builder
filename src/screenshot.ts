@@ -138,9 +138,47 @@ export async function screenshot(slug: string, baseUrl: string, opts: ShotOption
     // Full-page captures taken while scrolled (e.g. after clicking far down a form) draw sticky headers mid-page.
     if (opts.fullPage) await page.evaluate(() => window.scrollTo(0, 0)).catch(() => {});
     await page.waitForTimeout(500);
+    // Sideways scrolling is the most common phone-layout bug, and it is easy to miss in a screenshot
+    // (the viewport just shows the left part). Say so, and name what is too wide.
+    const overflow = await page.evaluate(detectOverflow).catch(() => null);
+    if (overflow)
+      notes.push(
+        `layout: the page is ${overflow.scrollWidth}px wide in a ${overflow.width}px viewport, so it scrolls sideways.` +
+          (overflow.wide.length ? ` Wider than the screen: ${overflow.wide.join(", ")}.` : "") +
+          (overflow.out.length ? ` Sticking out: ${overflow.out.join(", ")}.` : "") +
+          " Usual fixes: min-width: 0 on flex/grid children, grid columns minmax(0, 1fr), flex-wrap, overflow-x: auto on wide tables and rows.",
+      );
     const png = (await page.screenshot({ fullPage: opts.fullPage, type: "png" })).toString("base64");
     return { png, notes: notes.slice(0, 30) };
   } finally {
     await browser.close();
   }
+}
+
+/** Runs in the page: null when nothing scrolls sideways, else the widest containers and the elements past the edge. */
+function detectOverflow(): { width: number; scrollWidth: number; wide: string[]; out: string[] } | null {
+  const width = document.documentElement.clientWidth;
+  const scrollWidth = document.documentElement.scrollWidth;
+  if (scrollWidth <= width + 1) return null;
+  const inScroller = (el: Element) => {
+    for (let p = el.parentElement; p && p !== document.body; p = p.parentElement) {
+      if (/(auto|scroll|hidden|clip)/.test(getComputedStyle(p).overflowX)) return true;
+    }
+    return false;
+  };
+  const label = (el: Element) => {
+    const cls = typeof el.className === "string" ? el.className.trim().split(/\s+/).filter(Boolean).slice(0, 2) : [];
+    const text = (el.textContent ?? "").replace(/\s+/g, " ").trim().slice(0, 24);
+    return `<${el.tagName.toLowerCase()}${cls.length ? "." + cls.join(".") : ""}>${text ? ` "${text}"` : ""} (${Math.round(el.getBoundingClientRect().width)}px)`;
+  };
+  const all = [...document.querySelectorAll("body *")].filter((el) => !el.closest("svg") || el.tagName.toLowerCase() === "svg");
+  const visible = all.filter((el) => !inScroller(el) && getComputedStyle(el).position !== "fixed");
+  // Deepest elements that are themselves wider than the screen (the containers that got stretched).
+  const tooWide = visible.filter((el) => el.getBoundingClientRect().width > width + 1);
+  const wide = tooWide.filter((el) => ![...el.children].some((c) => tooWide.includes(c)));
+  // Deepest elements whose right edge is past the screen edge.
+  const past = visible.filter((el) => el.getBoundingClientRect().right > width + 1);
+  const out = past.filter((el) => ![...el.children].some((c) => past.includes(c)));
+  const uniq = (xs: Element[]) => [...new Set(xs.map(label))].slice(0, 4);
+  return { width, scrollWidth, wide: uniq(wide), out: uniq(out) };
 }

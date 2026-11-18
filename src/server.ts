@@ -23,6 +23,7 @@ import { addPackage } from "./packages.ts";
 import { screenshot } from "./screenshot.ts";
 import { secretsReport } from "./secrets.ts";
 import { profileData } from "./profile.ts";
+import { typecheck } from "./typecheck.ts";
 
 const server = new McpServer(
   { name: "mohit", version: "0.1.0" },
@@ -364,12 +365,32 @@ server.registerTool(
     }
     const abs = resolveInProject(project, normalised);
     if (!fs.existsSync(abs)) throw new Error(`${normalised} does not exist. Write it first.`);
-    // A random call in a loop condition re-rolls on every pass (a bug the guide warns about, and that still slips through).
-    const lint = fs.readFileSync(abs, "utf8").split(/\r?\n/).flatMap((line, i) =>
-      /for\s*\([^;]*;[^;]*[<>]=?\s*(?:Number\()?\s*fake\.(count|int|weighted|pick|float)\(/.test(line) ? [`line ${i + 1}: loop condition calls fake.${RegExp.$1}() on every pass; compute it once before the loop`] : []);
+    // A random call in a loop condition or a find/filter callback re-rolls on every pass (a bug the guide warns
+    // about, and that still slips through): the loop runs a random number of times, or the lookup finds nothing.
+    const lint = fs.readFileSync(abs, "utf8").split(/\r?\n/).flatMap((line, i) => {
+      const loop = /for\s*\([^;]*;[^;]*[<>]=?\s*(?:Number\()?\s*fake\.(count|int|weighted|pick|float)\(/.exec(line);
+      if (loop) return [`line ${i + 1}: loop condition calls fake.${loop[1]}() on every pass; compute it once before the loop`];
+      // Comparing each element with a fresh roll (find(m => m.id === fake.pick(ids))); random subsets (filter(() => fake.bool())) are fine.
+      const cb = /\.(find|findIndex|filter|some|every)\(\s*\(?[\w\s,]*\)?\s*=>[^;]*?[=!]==?\s*(?:Number\(|String\()?\s*fake\.(weighted|pick|int|count|float|unique)\(/.exec(line);
+      if (cb) return [`line ${i + 1}: .${cb[1]}() compares every element with a new fake.${cb[2]}() roll, so it can match nothing; roll once into a variable before .${cb[1]}()`];
+      return [];
+    });
     const r = await runScript(project, normalised, timeout_seconds * 1000);
     const summary = `${normalised} exited with code ${r.code} after ${(r.ms / 1000).toFixed(1)}s.${lint.length ? `\nWarning (likely bug):\n${lint.join("\n")}` : ""}`;
     return r.code === 0 ? text(`${summary}\n${r.output}`) : fail(`${summary}\n${r.output}`);
+  }),
+);
+
+server.registerTool(
+  "typecheck",
+  {
+    description:
+      "Type-check an app's code with TypeScript (nothing is run or changed). Catches what would otherwise only fail in the browser or at runtime: importing a name a package does not export, typos, wrong arguments. Run it after writing or changing code, before start_app and screenshots.",
+    inputSchema: { project },
+  },
+  safe(async ({ project }) => {
+    const r = await typecheck(project);
+    return r.ok ? text(r.report) : fail(r.report);
   }),
 );
 
