@@ -79,8 +79,18 @@ export function profileData(slug: string, onlyTable?: string): string {
           }
           if (!trendDone && /created|_at$|date|day/i.test(c.name)) {
             trendDone = true;
-            const months = q<{ m: string; n: number }>(`SELECT substr(${col}, 1, 7) AS m, COUNT(*) AS n FROM ${id} WHERE ${col} IS NOT NULL GROUP BY m ORDER BY m DESC LIMIT 13`).reverse();
+            const months = q<{ m: string; n: number }>(`SELECT substr(${col}, 1, 7) AS m, COUNT(*) AS n FROM ${id} WHERE ${col} IS NOT NULL AND ${col} <= datetime('now') GROUP BY m ORDER BY m DESC LIMIT 13`).reverse(); // future rows are reported above
             if (months.length > 2) out.push(`  per month: ${months.map((m) => `${m.m.slice(2)} ${m.n}`).join(" · ")}`);
+            // A steep ramp is more often missing older data (a job that only handles recent rows, history not
+            // generated) than real growth. Compare full months only: the first and last ones may be partial.
+            if (months.length >= 6) {
+              const first = Number(months[1].n);
+              const last = Number(months[months.length - 2].n);
+              if (first >= 10 && last >= first * 3)
+                warnings.push(`${t}.${c.name}: ${Math.round((last / first) * 10) / 10}× more rows per month in ${months[months.length - 2].m} than in ${months[1].m}. Real growth is rarely that steep: check older rows weren't skipped (e.g. a job that only processes recent data).`);
+              else if (last >= 10 && first >= last * 3)
+                warnings.push(`${t}.${c.name}: monthly rows fell to a third (${months[1].m} ${first} → ${months[months.length - 2].m} ${last}). Is recent data missing?`);
+            }
           }
           continue;
         }

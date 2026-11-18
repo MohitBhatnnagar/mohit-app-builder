@@ -293,6 +293,20 @@ try {
   check(Number(/names=(\d+)/.exec(b5)?.[1]) > 3000, `fake.fullName() has a wide pool (${/names=(\d+)/.exec(b5)?.[1]} distinct in 5,000)`);
   check(b5.includes(".find() compares every element with a new fake.pick() roll"), "run_script warns about re-rolling inside a find() callback");
   check(b5.includes('insertMany("notes") failed on row 1 of 1: notes.user_id = 999999 but users has no row with id = 999999'), "insertMany explains which reference is missing");
+  // Batch 6: a steep monthly ramp usually means older rows are missing.
+  await call("write_file", { project: "smoke-test", path: "scripts/ramp.ts", content: [
+    'import { insertMany, migrate } from "../server/platform/db.ts";',
+    'import { createUser } from "../server/platform/auth.ts";',
+    'migrate();',
+    'const u = createUser({ email: "ramp@example.com", password: "ramp-pass-123", name: "Ramp" });',
+    'const rows = [];',
+    'for (let m = 12; m >= 1; m--) for (let k = 0; k < (m > 6 ? 12 : 60); k++) rows.push({ user_id: u.id, body: "x", created_at: new Date(Date.now() - (m * 30 - k * 0.4) * 864e5).toISOString().slice(0, 19).replace("T", " ") });',
+    'insertMany("notes", rows);',
+  ].join("\n") });
+  await call("run_script", { project: "smoke-test", path: "scripts/ramp.ts" });
+  const ramp = await call("profile_data", { project: "smoke-test", table: "notes" });
+  check(/notes\.created_at: [\d.]+× more rows per month/.test(ramp), `profile_data flags a steep monthly ramp (often missing older data)${/more rows per month/.test(ramp) ? "" : `
+${ramp}`}`);
   await call("write_file", { project: "smoke-test", path: "src/App.tsx", content: 'export default function App() {\n  return <div style={{ display: "flex" }}><nav style={{ display: "flex", gap: 8 }}>{[1, 2, 3, 4, 5, 6].map((i) => <a key={i} style={{ flex: "none", width: 120 }}>Link {i}</a>)}</nav></div>;\n}\n' });
   const wide = (await client.callTool({ name: "screenshot_app", arguments: { project: "smoke-test", width: 390 } })) as any;
   const wideText = wide.content.find((c: any) => c.type === "text")?.text ?? "";
