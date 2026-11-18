@@ -191,7 +191,8 @@ try {
   check(ai.status === 503 && /ANTHROPIC_API_KEY/.test(aiBody.error), `AI helper without a key gives a clear setup error (${ai.status})`);
 
   // --- Screenshots ---
-  const shot = (await client.callTool({ name: "screenshot_app", arguments: { project: "smoke-test", width: 390, signed_in_as: "a@example.com" } })) as any;
+  // The first screenshot on a fresh machine waits for Vite to bundle the chart and icon libraries: allow up to 3 minutes.
+  const shot = (await client.callTool({ name: "screenshot_app", arguments: { project: "smoke-test", width: 390, signed_in_as: "a@example.com" } }, undefined, { timeout: 180_000 })) as any;
   const img = shot.content.find((c: any) => c.type === "image");
   const shotText = shot.content.find((c: any) => c.type === "text")?.text ?? "";
   check(!shot.isError && img && img.data.length > 5000, `screenshot_app returns an image (${shotText.split("\n")[0]})`);
@@ -203,11 +204,11 @@ try {
     { action: "click", target: "role=button[name='Sign in']" },
     { action: "fill", target: "input[placeholder='Write a note…']", value: "Note from a screenshot flow" },
     { action: "click", target: "role=button[name='Add']" },
-  ] } })) as any;
+  ] } }, undefined, { timeout: 180_000 })) as any;
   const flowText = flow.content.find((c: any) => c.type === "text")?.text ?? "";
   const stepFailed = /step \d+ \(.*\) failed/.test(flowText);
   check(!stepFailed && (await call("query_db", { project: "smoke-test", sql: "SELECT COUNT(*) AS n FROM notes WHERE body = 'Note from a screenshot flow'" })).includes('"n": 1'), `screenshot actions sign in and submit a form${stepFailed ? ` [${flowText.replace(/\n/g, " | ")}]` : ""}`);
-  const broken = (await client.callTool({ name: "screenshot_app", arguments: { project: "smoke-test", actions: [{ action: "click", target: "text=No such button" }] } })) as any;
+  const broken = (await client.callTool({ name: "screenshot_app", arguments: { project: "smoke-test", actions: [{ action: "click", target: "text=No such button" }] } }, undefined, { timeout: 180_000 })) as any;
   check((broken.content.find((c: any) => c.type === "text")?.text ?? "").includes("step 1 (click text=No such button) failed"), "a failing screenshot step is reported");
   await call("query_db", { project: "smoke-test", sql: "INSERT INTO notes (user_id, body, created_at) VALUES (1, 'from the future', '2099-01-01 00:00:00')" });
   const profile = await call("profile_data", { project: "smoke-test" });
@@ -308,7 +309,7 @@ try {
   check(/notes\.created_at: [\d.]+× more rows per month/.test(ramp), `profile_data flags a steep monthly ramp (often missing older data)${/more rows per month/.test(ramp) ? "" : `
 ${ramp}`}`);
   await call("write_file", { project: "smoke-test", path: "src/App.tsx", content: 'export default function App() {\n  return <div style={{ display: "flex" }}><nav style={{ display: "flex", gap: 8 }}>{[1, 2, 3, 4, 5, 6].map((i) => <a key={i} style={{ flex: "none", width: 120 }}>Link {i}</a>)}</nav></div>;\n}\n' });
-  const wide = (await client.callTool({ name: "screenshot_app", arguments: { project: "smoke-test", width: 390 } })) as any;
+  const wide = (await client.callTool({ name: "screenshot_app", arguments: { project: "smoke-test", width: 390 } }, undefined, { timeout: 180_000 })) as any;
   const wideText = wide.content.find((c: any) => c.type === "text")?.text ?? "";
   check(/scrolls sideways/.test(wideText) && wideText.includes("<nav>"), "screenshot_app reports pages that scroll sideways and names the culprit");
 
