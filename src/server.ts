@@ -15,8 +15,9 @@ import {
   projectDir,
   readMeta,
   resolveInProject,
+  syncPlatform,
 } from "./projects.ts";
-import { appLogs, appStatus, startApp, stopAll, stopApp } from "./runner.ts";
+import { appLogs, appStatus, runScript, startApp, stopAll, stopApp } from "./runner.ts";
 import { checkpoint, diffSince, listCheckpoints, restoreCheckpoint } from "./history.ts";
 import { addPackage } from "./packages.ts";
 import { screenshot } from "./screenshot.ts";
@@ -44,6 +45,32 @@ function safe<A>(fn: (args: A) => Promise<Result> | Result) {
 }
 
 const project = z.string().describe("Project slug, as returned by create_project or list_projects.");
+
+/** Count SQL statements, ignoring semicolons inside strings, identifiers and comments. */
+function countStatements(sql: string): number {
+  let count = 0;
+  let content = false;
+  for (let i = 0; i < sql.length; i++) {
+    const c = sql[i];
+    if (c === "'" || c === '"' || c === "`") {
+      const end = sql.indexOf(c, i + 1);
+      i = end === -1 ? sql.length : end;
+      content = true;
+    } else if (c === "-" && sql[i + 1] === "-") {
+      const end = sql.indexOf("\n", i);
+      i = end === -1 ? sql.length : end;
+    } else if (c === "/" && sql[i + 1] === "*") {
+      const end = sql.indexOf("*/", i + 2);
+      i = end === -1 ? sql.length : end + 1;
+    } else if (c === ";") {
+      if (content) count++;
+      content = false;
+    } else if (!/\s/.test(c)) {
+      content = true;
+    }
+  }
+  return count + (content ? 1 : 0);
+}
 
 server.registerTool(
   "mohit_guide",
@@ -163,12 +190,15 @@ server.registerTool(
     inputSchema: { project },
   },
   safe(async ({ project }) => {
-    // Every start is a restore point.
+    // Every start is a restore point, and picks up the latest Mohit built-ins.
     const saved = checkpoint(project, "Auto-save before start");
+    const platform = syncPlatform(project);
+    if (platform.length) checkpoint(project, `Update Mohit platform files: ${platform.map((f) => path.basename(f)).join(", ")}`);
     const { url, restarted } = await startApp(project);
     return text(
       `${readMeta(project).name} is ${restarted ? "restarted" : "running"} at ${url}` +
-        (saved ? `\n(Checkpoint ${saved} saved.)` : ""),
+        (saved ? `\n(Checkpoint ${saved} saved.)` : "") +
+        (platform.length ? `\n(Updated Mohit built-ins: ${platform.join(", ")}.)` : ""),
     );
   }),
 );
@@ -263,6 +293,43 @@ server.registerTool(
 );
 
 server.registerTool(
+  "run_script",
+  {
+    description: "Run a one-off TypeScript script inside an app, e.g. server/seed.ts to generate demo data, or a data fix. Same env and imports as the server. Returns its output and exit code.",
+    inputSchema: {
+      project,
+      path: z.string().default("server/seed.ts").describe("Script path inside the project, under server/ or scripts/."),
+      timeout_seconds: z.number().int().min(5).max(900).default(120).describe("Stop the script after this long. Seeds of 100k rows take a few seconds."),
+    },
+  },
+  safe(async ({ project, path: rel, timeout_seconds }) => {
+    const normalised = rel.replaceAll("\\", "/").replace(/^\.?\//, "");
+    if (!/^(server|scripts)\/[\w./-]+\.(ts|js|mjs)$/.test(normalised) || normalised.startsWith("server/platform/")) {
+      throw new Error("Scripts must be .ts/.js files under server/ or scripts/ (not server/platform/).");
+    }
+    const abs = resolveInProject(project, normalised);
+    if (!fs.existsSync(abs)) throw new Error(`${normalised} does not exist. Write it first.`);
+    const r = await runScript(project, normalised, timeout_seconds * 1000);
+    const summary = `${normalised} exited with code ${r.code} after ${(r.ms / 1000).toFixed(1)}s.`;
+    return r.code === 0 ? text(`${summary}\n${r.output}`) : fail(`${summary}\n${r.output}`);
+  }),
+);
+
+server.registerTool(
+  "reset_data",
+  {
+    description: "Delete an app's database, uploads and outbox (data/) and stop it, so it starts empty. Code is not touched. Use before re-running a seed script. Cannot be undone.",
+    inputSchema: { project, confirm: z.literal(true).describe("Must be true: this permanently deletes the app's data.") },
+  },
+  safe(async ({ project }) => {
+    const wasRunning = await stopApp(project);
+    const dir = path.join(projectDir(project), "data");
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+    return text(`Deleted ${project}'s data.${wasRunning ? " The app was stopped." : ""} Run your seed script or start_app to recreate the database.`);
+  }),
+);
+
+server.registerTool(
   "list_secrets",
   {
     description: "Which secret keys (API keys) an app can use, and where the user puts them. Shows names only, never values.",
@@ -305,6 +372,22 @@ server.registerTool(
     const db = new DatabaseSync(file);
     try {
       db.exec("PRAGMA busy_timeout = 5000");
+      if (countStatements(sql) > 1) {
+        // prepare() would silently run only the first statement; run the whole script instead.
+        if (params.length) throw new Error("params work with a single statement only. Split the script, or inline the values.");
+        if (/^\s*(select|with|pragma|explain)\b/i.test(sql)) throw new Error("Send one SELECT at a time.");
+        const before = Number((db.prepare("SELECT total_changes() AS n").get() as { n: number }).n);
+        db.exec("BEGIN");
+        try {
+          db.exec(sql);
+          db.exec("COMMIT");
+        } catch (err) {
+          db.exec("ROLLBACK");
+          throw new Error(`Script failed and was rolled back: ${(err as Error).message}`);
+        }
+        const after = Number((db.prepare("SELECT total_changes() AS n").get() as { n: number }).n);
+        return text(`OK: ran ${countStatements(sql)} statements in one transaction, ${after - before} row(s) changed.`);
+      }
       const stmt = db.prepare(sql);
       if (/^\s*(select|with|pragma|explain)\b/i.test(sql)) {
         const rows = stmt.all(...params);

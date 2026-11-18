@@ -25,8 +25,9 @@ function keysIn(file: string): string[] {
     .map((m) => m[1]);
 }
 
+/** The .env files that exist for an app, shared first (later files win). */
 export function envFiles(slug: string): string[] {
-  return [SHARED_ENV, path.join(projectDir(slug), ".env")];
+  return [SHARED_ENV, path.join(projectDir(slug), ".env")].filter((f) => fs.existsSync(f));
 }
 
 export function secretsReport(slug: string): string {

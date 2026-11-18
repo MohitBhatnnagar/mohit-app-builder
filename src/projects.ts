@@ -66,6 +66,10 @@ export function listProjects(): ProjectMeta[] {
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 }
 
+function escapeHtml(s: string): string {
+  return s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]!);
+}
+
 export function createProject(name: string, description: string): ProjectMeta {
   const slug = slugify(name);
   const dir = path.join(PROJECTS_DIR, slug);
@@ -78,12 +82,34 @@ export function createProject(name: string, description: string): ProjectMeta {
   const meta: ProjectMeta = { name, slug, description, createdAt: new Date().toISOString() };
   fs.writeFileSync(path.join(dir, "mohit.json"), JSON.stringify(meta, null, 2) + "\n");
   // Personalise the template.
-  for (const file of ["index.html", "package.json", "src/App.tsx"]) {
+  const initial = (name.match(/[A-Za-z0-9]/)?.[0] ?? "M").toUpperCase();
+  for (const file of ["index.html", "package.json", "src/App.tsx", "public/favicon.svg"]) {
     const p = path.join(dir, file);
-    fs.writeFileSync(p, fs.readFileSync(p, "utf8").replaceAll("__APP_NAME__", name).replaceAll("__APP_SLUG__", slug));
+    if (!fs.existsSync(p)) continue;
+    fs.writeFileSync(
+      p,
+      fs.readFileSync(p, "utf8").replaceAll("__APP_NAME__", escapeHtml(name)).replaceAll("__APP_SLUG__", slug).replaceAll("__APP_INITIAL__", initial),
+    );
   }
   initHistory(dir);
   return meta;
+}
+
+/** Bring an app's server/platform/ (Mohit's built-ins) up to date with the template. Returns updated files. */
+export function syncPlatform(slug: string): string[] {
+  const from = path.join(TEMPLATE_DIR, "server", "platform");
+  const to = path.join(projectDir(slug), "server", "platform");
+  fs.mkdirSync(to, { recursive: true });
+  const updated: string[] = [];
+  for (const file of fs.readdirSync(from)) {
+    const src = fs.readFileSync(path.join(from, file));
+    const dest = path.join(to, file);
+    if (!fs.existsSync(dest) || !src.equals(fs.readFileSync(dest))) {
+      fs.writeFileSync(dest, src);
+      updated.push(`server/platform/${file}`);
+    }
+  }
+  return updated;
 }
 
 /** Resolve a project-relative path, refusing anything that escapes the project. */

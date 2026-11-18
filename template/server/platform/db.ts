@@ -26,6 +26,27 @@ export function run(sql: string, ...params: SqlParam[]): { lastInsertRowid: numb
   return { lastInsertRowid: Number(r.lastInsertRowid), changes: Number(r.changes) };
 }
 
+/**
+ * Insert many rows fast (one transaction, one prepared statement). All rows use the keys of the first row.
+ *   insertMany("tasks", [{ title: "A", done: 0 }, { title: "B", done: 1 }])  → number inserted
+ */
+export function insertMany(table: string, rows: Record<string, SqlParam | boolean | undefined>[]): number {
+  if (!rows.length) return 0;
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(table)) throw new Error(`Bad table name: ${table}`);
+  const cols = Object.keys(rows[0]);
+  for (const c of cols) if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(c)) throw new Error(`Bad column name: ${c}`);
+  const stmt = db.prepare(`INSERT INTO ${table} (${cols.join(", ")}) VALUES (${cols.map(() => "?").join(", ")})`);
+  return transaction(() => {
+    for (const row of rows) {
+      stmt.run(...cols.map((c) => {
+        const v = row[c];
+        return typeof v === "boolean" ? (v ? 1 : 0) : (v ?? null);
+      }));
+    }
+    return rows.length;
+  });
+}
+
 /** Run fn inside a transaction; rolls back if it throws. */
 export function transaction<T>(fn: () => T): T {
   db.exec("BEGIN");

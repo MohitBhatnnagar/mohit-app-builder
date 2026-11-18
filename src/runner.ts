@@ -2,7 +2,7 @@
 // in one process, one port per app) and keeps its recent logs.
 import { spawn, type ChildProcess } from "node:child_process";
 import net from "node:net";
-import { projectDir, readMeta, writeMeta } from "./projects.ts";
+import { projectDir, readMeta, syncPlatform, writeMeta } from "./projects.ts";
 import { envFiles } from "./secrets.ts";
 
 const BASE_PORT = Number(process.env.MOHIT_BASE_PORT ?? 5100);
@@ -118,6 +118,39 @@ export function appStatus(slug: string): { running: boolean; url?: string } {
 export function appLogs(slug: string, lines = 100): string {
   const logs = running.get(slug)?.logs ?? lastLogs.get(slug) ?? [];
   return logs.slice(-lines).join("\n") || "(no logs yet; start the app with start_app)";
+}
+
+/** Run a one-off TypeScript script inside the app (seed data, data fixes, reports). */
+export function runScript(slug: string, scriptPath: string, timeoutMs = 600_000): Promise<{ code: number; output: string; ms: number }> {
+  const dir = projectDir(slug);
+  syncPlatform(slug); // scripts import the same built-ins as the server
+  const envArgs = envFiles(slug).map((f) => `--env-file-if-exists=${f}`);
+  const started = Date.now();
+  return new Promise((resolve) => {
+    const child = spawn(process.execPath, [...envArgs, scriptPath], {
+      cwd: dir,
+      env: { ...process.env, NODE_ENV: "development", FORCE_COLOR: "0" },
+      stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
+    });
+    let out = "";
+    const push = (c: Buffer) => {
+      out += c.toString();
+      if (out.length > 200_000) out = out.slice(-100_000);
+    };
+    child.stdout!.on("data", push);
+    child.stderr!.on("data", push);
+    const timer = setTimeout(() => {
+      out += `\n[mohit] script stopped after ${timeoutMs / 1000}s: it may be stuck in a loop (check while-loops and unique-value generators), or pass a larger timeout_seconds.`;
+      child.kill("SIGKILL");
+    }, timeoutMs);
+    child.on("exit", (code) => {
+      clearTimeout(timer);
+      const lines = out.trim().split(/\r?\n/);
+      const tail = lines.length > 80 ? ["…", ...lines.slice(-80)] : lines;
+      resolve({ code: code ?? -1, output: tail.join("\n"), ms: Date.now() - started });
+    });
+  });
 }
 
 export function stopAll(): void {

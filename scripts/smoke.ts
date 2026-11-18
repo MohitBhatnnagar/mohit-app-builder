@@ -126,6 +126,29 @@ try {
   check(envRefused, ".env cannot be read through the tools");
   check((await call("list_secrets", { project: "smoke-test" })).includes("RESEND_API_KEY: not set"), "list_secrets shows key status");
 
+  // --- Seeding, data reset, multi-statement SQL (found in test loop batch 1) ---
+  await call("query_db", { project: "smoke-test", sql: "DELETE FROM notes" });
+  const seeded = await call("run_script", { project: "smoke-test", path: "server/seed.ts" });
+  check(seeded.includes("Seeded 40 notes"), "run_script runs the starter seed (createUser + insertMany + fake)");
+  check((await call("run_script", { project: "smoke-test", path: "server/seed.ts" })).includes("Already seeded"), "seed is idempotent");
+  check((await call("query_db", { project: "smoke-test", sql: "SELECT COUNT(*) AS n FROM notes" })).includes('"n": 40'), "seeded rows are in the database");
+  const multi = await call("query_db", { project: "smoke-test", sql: "CREATE TABLE t1 (x INTEGER); INSERT INTO t1 VALUES (1); INSERT INTO t1 VALUES (2);" });
+  check(multi.includes("ran 3 statements") && (await call("query_db", { project: "smoke-test", sql: "SELECT COUNT(*) AS n FROM t1" })).includes('"n": 2'), "query_db runs every statement of a script");
+  let rolledBack = "";
+  try { await call("query_db", { project: "smoke-test", sql: "INSERT INTO t1 VALUES (3); INSERT INTO nope VALUES (1);" }); } catch (e) { rolledBack = (e as Error).message; }
+  check(rolledBack.includes("rolled back") && (await call("query_db", { project: "smoke-test", sql: "SELECT COUNT(*) AS n FROM t1" })).includes('"n": 2'), "a failing script is rolled back");
+  await call("write_file", { project: "smoke-test", path: "scripts/loop.ts", content: "while (true) {}\n" });
+  let stuck = "";
+  try { await call("run_script", { project: "smoke-test", path: "scripts/loop.ts", timeout_seconds: 5 }); } catch (e) { stuck = (e as Error).message; }
+  check(stuck.includes("stopped after 5s"), "a stuck script is stopped by its timeout");
+  await call("delete_file", { project: "smoke-test", path: "scripts/loop.ts" });
+  let platformRefused = false;
+  try { await call("run_script", { project: "smoke-test", path: "server/platform/db.ts" }); } catch { platformRefused = true; }
+  check(platformRefused, "run_script refuses platform files");
+  fs.writeFileSync(path.join(projectsDir, "smoke-test", "server", "platform", "fake.ts"), "// stale\n");
+  check((await call("start_app", { project: "smoke-test" })).includes("server/platform/fake.ts"), "start_app restores stale platform files");
+  check((await (await fetch(`${url}/favicon.svg`)).text()).includes(">S</text>"), "starter favicon carries the app initial");
+
   // --- Real email via a mock Resend API + AI helper without a key ---
   const received: { auth?: string; body: any }[] = [];
   const mock = http.createServer((req, res) => {

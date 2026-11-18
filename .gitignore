@@ -7,3 +7,4 @@ dist/
 .env.*
 !.env.example
 scripts/last-screenshot.png
+scripts/shots/

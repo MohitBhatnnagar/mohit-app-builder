@@ -14,6 +14,7 @@ Every app comes with these already wired up:
 | Email | `sendEmail()`, really delivered through Resend when a key is set, otherwise kept in an outbox |
 | AI | `aiText`, `aiChat`, `aiJson`, `aiStream`: Claude in your app's server code |
 | Version history | Every app is a git repo; checkpoints, diffs and one-step restore |
+| Demo data | `server/seed.ts` + `run_script`; `createUser`, fast `insertMany`, realistic deterministic `fake` data |
 | Packages | React Router, Recharts, Lucide icons, date-fns, zod, clsx, marked; more on demand |
 | Frontend | React 19 + Vite with hot reload |
 | Backend | Express 5 on Node, TypeScript with no build step |
@@ -91,6 +92,7 @@ The AI will call `create_project`, write the code, call `start_app`, check it wi
 | `screenshot_app` | See a page in headless Edge/Chrome (any width, optionally signed in), plus console errors |
 | `save_checkpoint` / `list_checkpoints` / `checkpoint_diff` / `restore_checkpoint` | Version history |
 | `add_package` | Install an npm package (install scripts disabled) |
+| `run_script` / `reset_data` | Run seed or data-fix scripts (with a timeout); wipe an app's data to start fresh |
 | `list_secrets` | Which API keys are set, by name only |
 | `query_db` | Run SQL on an app's database |
 | `list_emails` | Read what an app has emailed and whether it was delivered |
@@ -112,8 +114,19 @@ Each app is a normal folder with its own git history: `projects/<name>/`. Run on
 - Restoring a checkpoint restores code, not data. The database and uploads are not versioned.
 - AI helpers use `claude-opus-5-5` by default (set `MOHIT_AI_MODEL` to change) with server-side
   refusal fallback enabled. Every AI call is billed to your Anthropic account.
-- `npm run smoke` runs 41 end-to-end checks. It strips real API keys from its environment and uses a
+- `npm run smoke` runs 45 end-to-end checks. It strips real API keys from its environment and uses a
   mock email server, so it never sends mail or spends money.
+- `start_app` and `run_script` keep each app's `server/platform/` in sync with Mohit, so platform fixes
+  reach existing apps (the update is saved as a checkpoint).
+
+## Test loop
+
+Mohit is improved by building real apps with it, filling them with tens of thousands of generated
+rows, screenshotting them, and fixing whatever fails. `scripts/bridge.ts` drives the MCP server over
+local HTTP for this. Results and every issue found are in [loop/scorecard.md](loop/scorecard.md).
+
+Batch 1 (habit tracker, finance app, team CRM; 55–60k rows each): 67% of checks passed on the first
+attempt; 13 Mohit issues were found and fixed, including a silent `query_db` bug.
 
 ## Roadmap
 

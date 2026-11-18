@@ -13,6 +13,8 @@ You write the product code; Mohit runs it and gives you a preview URL.
 3. Write code with write_file / edit_file.
 4. start_app → preview URL. Every start applies new migrations and saves a checkpoint. Call start_app again after
    server changes; frontend changes hot-reload without a restart.
+4b. Seed realistic demo data: write server/seed.ts (see "Demo data") and run it with run_script. Apps should be
+   shown full of data, not empty.
 5. screenshot_app to SEE the result (and signed_in_as to see signed-in pages, width 390 for phone). Look at it and fix
    what looks wrong before telling the user it is done. It also reports console errors and failed API calls.
 6. Use app_logs when something breaks, query_db to inspect or fix data, list_emails to see sent mail.
@@ -49,7 +51,24 @@ Never import a package that is not installed.
 - Use ? placeholders. Timestamps: TEXT default (datetime('now')).
 - Built-in tables (do not recreate): users(id, email, name, created_at), sessions, files, _migrations.
 
-## Sign-in — import { requireUser, currentUser } from "./platform/auth.ts"
+- insertMany(table, rows) inserts thousands of rows in one fast transaction; rows are plain objects.
+- query_db runs one statement, or a multi-statement script (no params) inside a transaction.
+
+## Demo data — server/seed.ts, run with run_script { path: "server/seed.ts" }
+- The starter has an example. Call migrate() first, create a demo user with createUser (auth.ts), then insertMany.
+- Use fake from "./platform/fake.ts" for data: fake.fullName(), fake.email(name, i), fake.company(), fake.int(a, b),
+  fake.float, fake.bool(p), fake.pick(arr), fake.weighted({ open: 5, won: 2 }), fake.sample(arr, n), fake.sentence(),
+  fake.paragraph(), fake.title(), fake.productName(), fake.price(), fake.city(), fake.pastDate(days) (ISO),
+  fake.sqlDate(days) (matches datetime('now') columns), fake.day(daysAgo) (YYYY-MM-DD), fake.uuid(),
+  fake.unique(fake.company) for values that must not repeat (never write your own while-loop for uniqueness:
+  the name pools are small and it can loop forever).
+  It is deterministic, so screenshots are stable. Do randomness in TypeScript, not with SQL random().
+- For bulk users who never sign in, createUser({ ..., hashed: false }) is much faster.
+- Make the data realistic in shape: varied values, uneven distributions, dates spread over time.
+- Keep seeds idempotent (skip if already seeded). To re-seed: reset_data, then run_script.
+- Tell the user the demo login (email + password) so they can sign in.
+
+## Sign-in — import { requireUser, currentUser, createUser } from "./platform/auth.ts"
 - router.get("/things", requireUser, (req, res) => { const user = req.user!; ... })
 - currentUser(req) returns the user or null on routes that do not require sign-in.
 - Built-in endpoints: POST /api/auth/signup {email, password, name}, POST /api/auth/login {email, password},

@@ -85,6 +85,19 @@ export function currentUser(req: Request): User | null {
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
+/**
+ * Create a user who can sign in (for seed scripts and admin tools). Returns the existing user if the
+ * email is already taken. Use `hashed: false` only for bulk fake users who never sign in (much faster).
+ */
+export function createUser(input: { email: string; password: string; name?: string; hashed?: boolean }): User {
+  const email = input.email.trim().toLowerCase();
+  const existing = get<User>(`SELECT ${PUBLIC_USER} FROM users u WHERE u.email = ?`, email);
+  if (existing) return { ...existing };
+  const hash = input.hashed === false ? "no-login" : hashPassword(input.password);
+  const { lastInsertRowid } = run("INSERT INTO users (email, name, password_hash) VALUES (?, ?, ?)", email, input.name ?? "", hash);
+  return { ...get<User>(`SELECT ${PUBLIC_USER} FROM users u WHERE u.id = ?`, lastInsertRowid)! };
+}
+
 export function authRoutes(router: Router): void {
   router.post("/auth/signup", (req, res) => {
     const email = String(req.body?.email ?? "").trim().toLowerCase();
@@ -95,14 +108,9 @@ export function authRoutes(router: Router): void {
     if (get("SELECT 1 FROM users WHERE email = ?", email)) {
       return void res.status(409).json({ error: "An account with this email already exists." });
     }
-    const { lastInsertRowid } = run(
-      "INSERT INTO users (email, name, password_hash) VALUES (?, ?, ?)",
-      email,
-      name,
-      hashPassword(password),
-    );
-    startSession(res, lastInsertRowid);
-    res.status(201).json({ user: get<User>(`SELECT ${PUBLIC_USER} FROM users u WHERE u.id = ?`, lastInsertRowid) });
+    const user = createUser({ email, password, name });
+    startSession(res, user.id);
+    res.status(201).json({ user });
   });
 
   router.post("/auth/login", (req, res) => {
