@@ -9,7 +9,9 @@
   },
   "scripts": {
     "mcp": "node src/server.ts",
-    "smoke": "node scripts/smoke.ts"
+    "smoke": "node scripts/smoke.ts",
+    "typecheck": "tsc -p . && tsc -p template",
+    "test": "npm run typecheck && npm run smoke"
   },
   "engines": {
     "node": ">=23.6"
