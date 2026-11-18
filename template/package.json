@@ -1,0 +1,9 @@
+{
+  "name": "__APP_SLUG__",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node --env-file-if-exists=../../.env --env-file-if-exists=.env server/index.ts",
+    "build": "vite build"
+  }
+}

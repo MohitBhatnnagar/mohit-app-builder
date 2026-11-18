@@ -1,0 +1,9 @@
+node_modules/
+projects/
+.smoke-projects/
+data/
+dist/
+.env
+.env.*
+!.env.example
+scripts/last-screenshot.png
