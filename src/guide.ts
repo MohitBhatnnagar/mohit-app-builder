@@ -60,17 +60,22 @@ Never import a package that is not installed.
 ## Demo data — server/seed.ts, run with run_script { path: "server/seed.ts" }
 - The starter has an example. Call migrate() first, create a demo user with createUser (auth.ts), then insertMany.
 - Use fake from "./platform/fake.ts" for data: fake.fullName(), fake.email(name, i), fake.company(), fake.int(a, b),
-  fake.float, fake.bool(p), fake.pick(arr), fake.weighted({ open: 5, won: 2 }), fake.sample(arr, n), fake.sentence(),
+  fake.float, fake.bool(p), fake.pick(arr), fake.weighted({ open: 5, won: 2 }) (returns the key string),
+  fake.count({ 0: 3, 1: 2, 4: 1 }) (returns a weighted number; compute before a loop), fake.sample(arr, n), fake.sentence(),
   fake.paragraph(), fake.title(), fake.productName(), fake.price(), fake.city(), fake.pastDate(days) (ISO),
   fake.sqlDate(days) (matches datetime('now') columns), fake.day(daysAgo) (YYYY-MM-DD), fake.uuid(),
   fake.unique(fake.company) for values that must not repeat (never write your own while-loop for uniqueness:
   the name pools are small and it can loop forever).
   It is deterministic, so screenshots are stable. Do randomness in TypeScript, not with SQL random().
-- For bulk users who never sign in, createUser({ ..., hashed: false }) is much faster.
+- For bulk users who never sign in, createUser({ ..., hashed: false }) is much faster. Pass createdAt
+  (e.g. fake.sqlDate(540)) so users join over time; otherwise they all "joined" at the same second.
 - Make the data realistic in shape: varied values, uneven distributions, dates spread over time.
 - After seeding, call profile_data and read it like a skeptic. Common seed bugs it reveals: events dated in the
   future, a trend going the wrong way (a growing business should have MORE recent rows), old items stuck "open"
-  forever, balances that only ever go down, one value in every row. Fix the seed, reset_data, re-run.
+  forever, balances that only ever go down, one value in every row, many rows on one timestamp. Fix the seed,
+  reset_data, re-run.
+- Events that would fall in the future (a reply due tomorrow) have not happened yet: skip them. Never clamp a date
+  to "now" — that piles rows onto one moment and shows as "40 seconds ago" everywhere.
 - Text must match its context (a reply to an outage ticket talks about the outage): pick text per category.
 - Keep seeds idempotent (skip if already seeded). To re-seed: reset_data, then run_script.
 - Tell the user the demo login (email + password) so they can sign in.
@@ -86,7 +91,15 @@ Never import a package that is not installed.
 ## File storage — import { saveFile, fileUrl } from "./platform/storage.ts"
 - Frontend upload: await uploadFile(file) from src/api.ts → { id, name, url, size, type }.
 - Built-in endpoints: POST /api/files (raw body, x-filename header, signed-in users only), GET /api/files/:id.
-- Server-side: saveFile({ name, type, data: Buffer, userId }) → same record.
+- Server-side: saveFile({ name, type, data: Buffer, userId }) → same record. Seeds can generate files in code
+  (SVG images, simple PDFs) and save them this way.
+- Uploads are limited to 25 MB (a clear 413 error beyond that); the user can raise it with MAX_UPLOAD_MB in .env.
+- Downloads support byte ranges, so <video src={url}> streams and seeks. Anyone with a file URL can open it.
+
+## User-written content
+- Never render user text as HTML. If you render Markdown (marked), drop raw HTML:
+  new Marked({ renderer: { html: () => "" } }). React already escapes plain text; avoid dangerouslySetInnerHTML
+  for anything else.
 
 ## Email — import { sendEmail, emailDeliveryEnabled } from "./platform/email.ts"
 - await sendEmail({ to, subject, text, html?, replyTo? }) → { id, delivered }.
@@ -103,6 +116,20 @@ Server-side only, needs ANTHROPIC_API_KEY. Options: { system?, maxTokens?, effor
 - Errors are AiError with an HTTP status and a readable message; in async routes just await and let them throw.
 - Use effort "low" for quick chat or classification, "medium" by default, "high" for hard reasoning.
 - Every AI call costs the user money: call it on user actions, never in loops over many rows or on every page load.
+
+## Scheduled jobs — import { every } from "./platform/jobs.ts"
+- every("name", minutes, fn) in server/routes.ts runs fn on a timer inside the server (first run ~2 s after start).
+  No overlapping runs, errors and slow runs go to app_logs. Use it for rollups, cleanups, reminder emails.
+
+## Performance at scale
+- Up to ~100k rows, indexed queries are fast. For dashboards over millions of rows (analytics, events, logs),
+  aggregate into daily rollup tables (one row per day per dimension), refresh them with every(), and read
+  long date ranges from the rollups. Check with timings: list/dashboard endpoints should answer in < 300 ms.
+- Index the columns you filter and sort by; query_db with "EXPLAIN QUERY PLAN SELECT ..." shows index use.
+
+## Media files
+- write_file is text only. If the user has images, videos or documents to use, ask for the file path and use
+  import_file to copy them into the project (e.g. seed-assets/ for seeds, public/ for static assets).
 
 ## Secrets (API keys)
 - Keys live in .env files that only the user edits. You cannot read or write .env.

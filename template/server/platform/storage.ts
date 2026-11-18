@@ -3,11 +3,13 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import express from "express";
-import type { Router } from "express";
+import type { NextFunction, Request, Response, Router } from "express";
 import { DATA_DIR, get, run } from "./db.ts";
 import { requireUser } from "./auth.ts";
 
 const UPLOAD_DIR = path.join(DATA_DIR, "uploads");
+/** Upload size limit in MB; set MAX_UPLOAD_MB in .env for apps with large files (e.g. video courses). */
+export const MAX_UPLOAD_MB = Math.max(1, Number(process.env.MAX_UPLOAD_MB) || 25);
 fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 
 export interface StoredFile {
@@ -44,8 +46,16 @@ export function deleteFile(id: string): void {
 }
 
 export function storageRoutes(router: Router): void {
-  // Upload: raw body, file name in the x-filename header. Max 25 MB.
-  router.post("/files", requireUser, express.raw({ type: () => true, limit: "25mb" }), (req, res) => {
+  // Upload: raw body, file name in the x-filename header. Max MAX_UPLOAD_MB (default 25) megabytes.
+  const raw = express.raw({ type: () => true, limit: `${MAX_UPLOAD_MB}mb` });
+  const readBody = (req: Request, res: Response, next: NextFunction) =>
+    raw(req, res, (err?: unknown) => {
+      if ((err as { type?: string } | undefined)?.type === "entity.too.large") {
+        return void res.status(413).json({ error: `That file is too large. The limit is ${MAX_UPLOAD_MB} MB.` });
+      }
+      next(err);
+    });
+  router.post("/files", requireUser, readBody, (req, res) => {
     const data = req.body as Buffer;
     if (!Buffer.isBuffer(data) || data.length === 0) return void res.status(400).json({ error: "Empty upload." });
     const name = decodeURIComponent(String(req.headers["x-filename"] ?? "file"));

@@ -27,7 +27,7 @@ export function profileData(slug: string, onlyTable?: string): string {
     for (const t of tables.slice(0, 40)) {
       const id = `"${t.replace(/"/g, '""')}"`;
       const n = Number(one<{ n: number }>(`SELECT COUNT(*) AS n FROM ${id}`).n);
-      out.push(`\n## ${t}: ${n.toLocaleString()} rows`);
+      out.push(`\n## ${t}: ${n.toLocaleString("en-US")} rows`);
       if (!n) continue;
       const cols = q<{ name: string; type: string; pk: number }>(`PRAGMA table_info(${id})`);
       // Stale "open" items: an open-like status on rows created long ago.
@@ -38,7 +38,7 @@ export function profileData(slug: string, onlyTable?: string): string {
           `SELECT COUNT(*) AS n FROM ${id} WHERE lower("${statusCol.name}") IN ('open','pending','new','todo','in_progress','active','lead','unread','waiting') AND "${createdCol.name}" < datetime('now', '-90 days')`,
         );
         if (Number(stale.n) > 0) {
-          out.push(`- ${Number(stale.n).toLocaleString()} rows still ${statusCol.name}=open-like although created over 90 days ago`);
+          out.push(`- ${Number(stale.n).toLocaleString("en-US")} rows still ${statusCol.name}=open-like although created over 90 days ago`);
           if (Number(stale.n) > n * 0.02) warnings.push(`${t}: ${Number(stale.n)} items created 90+ days ago are still open/pending (old work normally gets finished)`);
         }
       }
@@ -52,8 +52,25 @@ export function profileData(slug: string, onlyTable?: string): string {
         if (typeof sample === "string" && (DATE_NAME.test(c.name) || DATE_VALUE.test(sample)) && DATE_VALUE.test(sample)) {
           const r = one<{ lo: string; hi: string; fut: number }>(`SELECT MIN(${col}) AS lo, MAX(${col}) AS hi, SUM(${col} > ?) AS fut FROM ${id}`, now);
           const fut = Number(r.fut ?? 0);
-          out.push(`- ${c.name}: ${r.lo} → ${r.hi}${fut ? `, ${fut.toLocaleString()} in the future` : ""}${nullNote}`);
+          out.push(`- ${c.name}: ${r.lo} → ${r.hi}${fut ? `, ${fut.toLocaleString("en-US")} in the future` : ""}${nullNote}`);
           if (fut && /created|placed|sent|joined|signed|logged|posted/i.test(c.name)) warnings.push(`${t}.${c.name} has ${fut} rows dated in the future`);
+          // Pile-ups: many rows with the exact same timestamp usually mean dates were clamped (e.g. to "now").
+          if (/\d{2}:\d{2}/.test(sample) && n >= 30) {
+            const top = n >= 200
+              ? one<{ v: string; k: number }>(`SELECT ${col} AS v, COUNT(*) AS k FROM ${id} WHERE ${col} IS NOT NULL GROUP BY ${col} ORDER BY k DESC LIMIT 1`)
+              : { v: "", k: 0 };
+            if (Number(top.k) > Math.max(20, n * 0.005)) {
+              out.push(`  ${Number(top.k).toLocaleString("en-US")} rows share the exact timestamp ${top.v}`);
+              warnings.push(`${t}.${c.name}: ${Number(top.k)} rows share the exact timestamp ${top.v} (clamped or defaulted dates?)`);
+            } else {
+              // Clamping to "now" piles rows onto the LATEST moment: few rows overall, but exactly the ones "recent" lists show.
+              const last = one<{ k: number }>(`SELECT COUNT(*) AS k FROM ${id} WHERE ${col} = (SELECT MAX(${col}) FROM ${id})`);
+              if (Number(last.k) >= 10) {
+                out.push(`  ${Number(last.k)} rows share the latest timestamp ${r.hi}`);
+                warnings.push(`${t}.${c.name}: ${Number(last.k)} rows share the latest timestamp ${r.hi} (dates clamped to "now"?)`);
+              }
+            }
+          }
           if (!trendDone && /created|_at$|date|day/i.test(c.name)) {
             trendDone = true;
             const months = q<{ m: string; n: number }>(`SELECT substr(${col}, 1, 7) AS m, COUNT(*) AS n FROM ${id} WHERE ${col} IS NOT NULL GROUP BY m ORDER BY m DESC LIMIT 13`).reverse();
@@ -83,7 +100,7 @@ export function profileData(slug: string, onlyTable?: string): string {
           if (distinct === 1 && n > 20) warnings.push(`${t}.${c.name} has the same value in every row`);
         } else {
           const dupes = n - distinct;
-          out.push(`- ${c.name}: ${distinct.toLocaleString()} distinct${dupes > n * 0.5 && n > 100 ? " (many repeats)" : ""}${nullNote}`);
+          out.push(`- ${c.name}: ${distinct.toLocaleString("en-US")} distinct${dupes > n * 0.5 && n > 100 ? " (many repeats)" : ""}${nullNote}`);
         }
       }
     }

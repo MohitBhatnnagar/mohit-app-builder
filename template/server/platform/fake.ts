@@ -49,6 +49,16 @@ export function createFake(seed = 42) {
       for (const [k, w] of entries) if ((x -= w) < 0) return k;
       return entries[entries.length - 1][0];
     },
+    /**
+     * A weighted NUMBER, e.g. how many comments a task gets: fake.count({ 0: 3, 1: 3, 2: 2, 5: 1 }).
+     * Compute it once before a loop; never call it inside a loop condition (it would re-roll every pass).
+     */
+    count: (weights: Record<number, number>): number => {
+      const entries = Object.entries(weights);
+      let x = r() * entries.reduce((s, [, w]) => s + w, 0);
+      for (const [k, w] of entries) if ((x -= w) < 0) return Number(k);
+      return Number(entries[entries.length - 1][0]);
+    },
     /** n distinct items from arr. */
     sample: <T>(arr: readonly T[], n: number): T[] => {
       const copy = [...arr];

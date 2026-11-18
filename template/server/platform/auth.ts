@@ -89,12 +89,16 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
  * Create a user who can sign in (for seed scripts and admin tools). Returns the existing user if the
  * email is already taken. Use `hashed: false` only for bulk fake users who never sign in (much faster).
  */
-export function createUser(input: { email: string; password: string; name?: string; hashed?: boolean }): User {
+export function createUser(input: { email: string; password: string; name?: string; hashed?: boolean; createdAt?: string }): User {
   const email = input.email.trim().toLowerCase();
   const existing = get<User>(`SELECT ${PUBLIC_USER} FROM users u WHERE u.email = ?`, email);
   if (existing) return { ...existing };
   const hash = input.hashed === false ? "no-login" : hashPassword(input.password);
-  const { lastInsertRowid } = run("INSERT INTO users (email, name, password_hash) VALUES (?, ?, ?)", email, input.name ?? "", hash);
+  // createdAt ("YYYY-MM-DD HH:MM:SS", e.g. fake.sqlDate(365)) lets seed users join over time instead of all "now".
+  const { lastInsertRowid } = run(
+    "INSERT INTO users (email, name, password_hash, created_at) VALUES (?, ?, ?, COALESCE(?, datetime('now')))",
+    email, input.name ?? "", hash, input.createdAt ?? null,
+  );
   return { ...get<User>(`SELECT ${PUBLIC_USER} FROM users u WHERE u.id = ?`, lastInsertRowid)! };
 }
 

@@ -213,6 +213,43 @@ try {
   const profile = await call("profile_data", { project: "smoke-test" });
   check(profile.includes("notes.created_at has 1 rows dated in the future") && profile.includes("## notes:"), "profile_data flags future-dated rows");
 
+  // --- Batch 3 additions: pile-ups, seed helpers, jobs, uploads, media import ---
+  await call("query_db", { project: "smoke-test", sql: "INSERT INTO notes (user_id, body, created_at) WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 12) SELECT 1, 'clamped', '2099-06-01 00:00:00' FROM n" });
+  check((await call("profile_data", { project: "smoke-test", table: "notes" })).includes("12 rows share the latest timestamp"), "profile_data flags rows piled onto the latest timestamp");
+  await call("write_file", { project: "smoke-test", path: "scripts/helpers.ts", content: [
+    'import { createUser } from "../server/platform/auth.ts";',
+    'import { fake } from "../server/platform/fake.ts";',
+    'const u = createUser({ email: "old@example.com", password: "", hashed: false, createdAt: "2024-03-01 10:00:00" });',
+    'const counts = Array.from({ length: 200 }, () => fake.count({ 0: 1, 3: 1 }));',
+    'console.log(`created_at=${u.created_at} countsOK=${counts.every((c) => c === 0 || c === 3) && counts.includes(3)} type=${typeof counts[0]}`);',
+  ].join("\n") });
+  const helpers = await call("run_script", { project: "smoke-test", path: "scripts/helpers.ts" });
+  check(helpers.includes("created_at=2024-03-01 10:00:00") && helpers.includes("countsOK=true type=number"), "createUser({ createdAt }) and fake.count() work");
+  const big = Buffer.alloc(26 * 1024 * 1024);
+  const tooBig = await fetch(`${url}/api/files`, { method: "POST", headers: { cookie, "Content-Type": "video/mp4", "x-filename": "big.mp4" }, body: big });
+  check(tooBig.status === 413 && ((await tooBig.json()) as any).error.includes("limit is 25 MB"), "oversized uploads get a clear 413 message");
+  await call("edit_file", {
+    project: "smoke-test", path: "server/routes.ts",
+    old_text: 'import { sendEmail } from "./platform/email.ts";',
+    new_text: 'import { sendEmail } from "./platform/email.ts";\nimport { every } from "./platform/jobs.ts";\nevery("smoke tick", 0.01, () => {});',
+  });
+  await call("start_app", { project: "smoke-test" });
+  await new Promise((r) => setTimeout(r, 3500));
+  check((await call("app_logs", { project: "smoke-test" })).includes('[job] "smoke tick" ran'), "scheduled jobs run and log");
+  const os = await import("node:os");
+  const media = path.join(os.tmpdir(), `mohit-smoke-${Date.now()}.png`);
+  fs.writeFileSync(media, Buffer.from("89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d4944415478da63f8ffff3f0005fe02fea7d6a5d60000000049454e44ae426082", "hex"));
+  await call("import_file", { project: "smoke-test", source: media, path: "public/logo.png" });
+  const logo = await fetch(`${url}/logo.png`);
+  check(logo.ok && (logo.headers.get("content-type") ?? "").includes("image/png"), `import_file copies media into the project and it is served${logo.ok ? "" : ` [status ${logo.status}, file exists: ${fs.existsSync(path.join(projectsDir, "smoke-test", "public", "logo.png"))}]`}`);
+  const secret = path.join(os.tmpdir(), `mohit-smoke-${Date.now()}.pem`);
+  fs.writeFileSync(secret, "-----BEGIN KEY-----");
+  let refusedImport = "";
+  try { await call("import_file", { project: "smoke-test", source: secret, path: "public/key.pem" }); } catch (e) { refusedImport = (e as Error).message; }
+  check(refusedImport.includes("Only media, document and data files"), "import_file refuses non-media files");
+  fs.rmSync(media, { force: true });
+  fs.rmSync(secret, { force: true });
+
   let badPkg = "";
   try { await call("add_package", { project: "smoke-test", package: "Not A Package!" }); } catch (e) { badPkg = (e as Error).message; }
   check(badPkg.includes("not a valid npm package name"), "add_package rejects invalid names");

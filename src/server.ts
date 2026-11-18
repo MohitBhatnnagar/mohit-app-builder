@@ -174,6 +174,44 @@ server.registerTool(
 );
 
 server.registerTool(
+  "import_file",
+  {
+    description: "Copy a media or document file from the user's computer into a project (images, video, audio, PDF, fonts, CSV/JSON data). Use when the user gives you a path to their own file. write_file cannot create binary files.",
+    inputSchema: {
+      project,
+      source: z.string().describe("Absolute path of the user's file, e.g. C:\\Users\\me\\Videos\\intro.mp4"),
+      path: z.string().describe("Destination inside the project, e.g. seed-assets/intro.mp4 or public/logo.png"),
+    },
+  },
+  safe(async ({ project, source, path: rel }) => {
+    const src = path.resolve(source);
+    const ext = path.extname(src).toLowerCase();
+    const ALLOWED = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".ico", ".avif", ".mp4", ".webm", ".mov", ".mp3", ".wav", ".ogg", ".m4a", ".pdf", ".woff", ".woff2", ".ttf", ".otf", ".csv", ".json", ".txt", ".md"]);
+    if (!ALLOWED.has(ext)) throw new Error(`Only media, document and data files can be imported (got "${ext || "no extension"}").`);
+    if (src.split(/[\\/]/).some((part) => part.startsWith(".") && part.length > 1)) throw new Error("Files inside hidden folders (like .ssh or .config) can't be imported.");
+    if (!fs.existsSync(src) || !fs.statSync(src).isFile()) throw new Error(`${source} is not a file.`);
+    const size = fs.statSync(src).size;
+    if (size > 500 * 1024 * 1024) throw new Error("That file is over 500 MB.");
+    const dest = resolveInProject(project, rel, true);
+    if (path.extname(dest).toLowerCase() !== ext) throw new Error(`Keep the ${ext} extension in the destination path.`);
+    fs.mkdirSync(path.dirname(dest), { recursive: true });
+    fs.copyFileSync(src, dest);
+    // A running dev server notices new public/ files a moment later; wait so the next screenshot sees it.
+    const running = appStatus(project).url;
+    const publicPath = rel.replaceAll("\\", "/").replace(/^\.?\//, "");
+    if (running && publicPath.startsWith("public/")) {
+      const servedAt = `${running}/${publicPath.slice("public/".length)}`;
+      for (let i = 0; i < 25; i++) {
+        const r = await fetch(servedAt).catch(() => null);
+        if (r?.ok && !(r.headers.get("content-type") ?? "").includes("text/html")) break;
+        await new Promise((res) => setTimeout(res, 200));
+      }
+    }
+    return text(`Imported ${path.basename(src)} (${(size / 1048576).toFixed(1)} MB) to ${rel}. Files under public/ are served at /${rel.replace(/^public\//, "")}; seeds can read other paths with fs and saveFile().`);
+  }),
+);
+
+server.registerTool(
   "delete_file",
   { description: "Delete a file from a project.", inputSchema: { project, path: z.string() } },
   safe(({ project, path: rel }) => {
@@ -294,11 +332,14 @@ server.registerTool(
   },
   safe(async ({ project, path: pagePath, width, height, full_page, signed_in_as, actions }) => {
     const url = appStatus(project).url ?? (await startApp(project)).url;
-    const { png, notes } = await screenshot(project, url, { path: pagePath, width, height, fullPage: full_page, signedInAs: signed_in_as, actions });
+    const { png, notes: allNotes } = await screenshot(project, url, { path: pagePath, width, height, fullPage: full_page, signedInAs: signed_in_as, actions });
+    // Informational notes (in parentheses) are not problems.
+    const notes = allNotes.filter((n) => !n.startsWith("("));
+    const info = allNotes.filter((n) => n.startsWith("("));
     return {
       content: [
         { type: "image", data: png, mimeType: "image/png" },
-        { type: "text", text: `${url}${pagePath} at ${width}×${height}${signed_in_as ? `, signed in as ${signed_in_as}` : ""}.\n${notes.length ? notes.join("\n") : "No console errors or failed API calls."}` },
+        { type: "text", text: `${url}${pagePath} at ${width}×${height}${signed_in_as ? `, signed in as ${signed_in_as}` : ""}.\n${notes.length ? notes.join("\n") : "No console errors or failed API calls."}${info.length ? `\n${info.join("\n")}` : ""}` },
       ],
     };
   }),

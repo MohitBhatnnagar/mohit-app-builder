@@ -15,6 +15,7 @@ Every app comes with these already wired up:
 | AI | `aiText`, `aiChat`, `aiJson`, `aiStream`: Claude in your app's server code |
 | Version history | Every app is a git repo; checkpoints, diffs and one-step restore |
 | Demo data | `server/seed.ts` + `run_script`; `createUser`, fast `insertMany`, realistic deterministic `fake` data |
+| Scheduled jobs | `every(name, minutes, fn)` for rollups, cleanups and reminders |
 | Packages | React Router, Recharts, Lucide icons, date-fns, zod, clsx, marked; more on demand |
 | Frontend | React 19 + Vite with hot reload |
 | Backend | Express 5 on Node, TypeScript with no build step |
@@ -94,6 +95,7 @@ The AI will call `create_project`, write the code, call `start_app`, check it wi
 | `save_checkpoint` / `list_checkpoints` / `checkpoint_diff` / `restore_checkpoint` | Version history |
 | `add_package` | Install an npm package (install scripts disabled) |
 | `run_script` / `reset_data` | Run seed or data-fix scripts (with a timeout); wipe an app's data to start fresh |
+| `import_file` | Copy the user's images, video, PDFs or data files into a project (media types only) |
 | `list_secrets` | Which API keys are set, by name only |
 | `query_db` | Run SQL on an app's database |
 | `list_emails` | Read what an app has emailed and whether it was delivered |
@@ -115,7 +117,7 @@ Each app is a normal folder with its own git history: `projects/<name>/`. Run on
 - Restoring a checkpoint restores code, not data. The database and uploads are not versioned.
 - AI helpers use `claude-opus-5-5` by default (set `MOHIT_AI_MODEL` to change) with server-side
   refusal fallback enabled. Every AI call is billed to your Anthropic account.
-- `npm run smoke` runs 48 end-to-end checks. It strips real API keys from its environment and uses a
+- `npm run smoke` runs 54 end-to-end checks. It strips real API keys from its environment and uses a
   mock email server, so it never sends mail or spends money.
 - `start_app` and `run_script` keep each app's `server/platform/` in sync with Mohit, so platform fixes
   reach existing apps (the update is saved as a checkpoint).
@@ -130,10 +132,13 @@ local HTTP for this. Results and every issue found are in [loop/scorecard.md](lo
 | --- | --- | --- | --- | --- |
 | 1 | Habit tracker, finance app, team CRM | 55–61k | 67% | 13 (incl. a silent `query_db` bug) |
 | 2 | Booking SaaS, online store, AI helpdesk | 91–141k | 77% | 4 |
+| 3 | Live project tracker, video course platform, analytics | 71k–1.04M | 80% | 9 |
 
-Every batch-2 app started, migrated and seeded on the first try. The remaining first-pass failures were
-mostly in the AI-written app code (unrealistic seed data, display slips), which `profile_data` and
-screenshot flows now surface earlier.
+Every app since batch 2 has started, migrated and seeded on the first try, including live updates over
+server-sent events, video streaming with seeking, and a million-event analytics app (12-month dashboard in
+257 ms after rollups). The remaining first-pass failures are mostly in the AI-written app code (seed
+realism, phone layouts, performance choices), which `profile_data`, screenshot flows and the guide now
+surface earlier.
 
 ## Roadmap
 

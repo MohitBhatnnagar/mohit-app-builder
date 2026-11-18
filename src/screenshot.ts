@@ -114,7 +114,17 @@ export async function screenshot(slug: string, baseUrl: string, opts: ShotOption
     page.on("response", (r) => {
       if (r.status() >= 400) notes.push(`HTTP ${r.status()} ${r.request().method()} ${shortUrl(r.url())}`);
     });
-    page.on("requestfailed", (req) => notes.push(`request failed: ${req.method()} ${shortUrl(req.url())} (${req.failure()?.errorText ?? "unknown"})`));
+    let viteReloaded = false;
+    page.on("requestfailed", (req) => {
+      // Vite aborts its own dependency requests when it re-bundles new imports and reloads the page:
+      // that is the dev server at work, not an app error.
+      if (/\/node_modules\/\.vite\/|\/@vite\/|\/@react-refresh/.test(req.url()) && /ABORTED/i.test(req.failure()?.errorText ?? "")) {
+        if (!viteReloaded) notes.push("(dev server re-bundled new dependencies and reloaded the page once; not an app error)");
+        viteReloaded = true;
+        return;
+      }
+      notes.push(`request failed: ${req.method()} ${shortUrl(req.url())} (${req.failure()?.errorText ?? "unknown"})`);
+    });
     const target = new URL(opts.path.startsWith("/") ? opts.path : `/${opts.path}`, baseUrl).toString();
     await page.goto(target, { waitUntil: "load", timeout: 30_000 });
     // Let React render and initial API calls settle.
@@ -125,6 +135,8 @@ export async function screenshot(slug: string, baseUrl: string, opts: ShotOption
     await page
       .evaluate(() => Promise.race([Promise.all(document.getAnimations().map((a) => a.finished)), new Promise((r) => setTimeout(r, 2000))]))
       .catch(() => {});
+    // Full-page captures taken while scrolled (e.g. after clicking far down a form) draw sticky headers mid-page.
+    if (opts.fullPage) await page.evaluate(() => window.scrollTo(0, 0)).catch(() => {});
     await page.waitForTimeout(500);
     const png = (await page.screenshot({ fullPage: opts.fullPage, type: "png" })).toString("base64");
     return { png, notes: notes.slice(0, 30) };
