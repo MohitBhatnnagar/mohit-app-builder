@@ -69,6 +69,12 @@ try {
   const cookie = signup.headers.get("set-cookie")!.split(";")[0];
   const authed = { ...jsonHeaders, cookie };
   check(((await (await fetch(`${url}/api/auth/me`, { headers: { cookie } })).json()) as any).user.email === "a@example.com", "session cookie works");
+  const unverified = ((await (await fetch(`${url}/api/auth/me`, { headers: { cookie } })).json()) as any).user.email_verified_at;
+  const verifyToken = /verify\?token=([0-9a-f]+)/.exec(await call("list_emails", { project: "smoke-test" }))?.[1];
+  const verifyRes = await fetch(`${url}/api/auth/verify?token=${verifyToken}`, { redirect: "manual" });
+  const verified = ((await (await fetch(`${url}/api/auth/me`, { headers: { cookie } })).json()) as any).user.email_verified_at;
+  const reused = await fetch(`${url}/api/auth/verify?token=${verifyToken}`, { redirect: "manual" });
+  check(unverified === null && verifyToken && verifyRes.status === 302 && verified && reused.status === 400, "sign-up sends a one-time verification link; clicking it sets email_verified_at");
   const bad = await fetch(`${url}/api/auth/login`, { method: "POST", headers: jsonHeaders, body: JSON.stringify({ email: "a@example.com", password: "nope-nope" }) });
   check(bad.status === 401, "wrong password rejected");
 
@@ -347,7 +353,7 @@ ${ramp}`}`);
   check(/Data check:/.test(seededMore) && /Invariants: 1 of 2 broken/.test(seededMore), "running a seed reports the data check and invariants straight away");
   const ver = (await client.callTool({ name: "verify_app", arguments: { project: "smoke-test", paths: ["/"] } }, undefined, { timeout: 180_000 })) as any;
   const verText = ver.content.find((c: any) => c.type === "text")?.text ?? "";
-  check(ver.isError && /verify_app: \d of 5 checks passed/.test(verText) && verText.includes("✓ Type check") && verText.includes("✗ Invariants") && /\/ at 390px/.test(verText), `verify_app reports every check in one go (${verText.split("\n")[0]})`);
+  check(ver.isError && /verify_app: \d of 6 checks passed/.test(verText) && verText.includes("✓ Type check") && verText.includes("✗ Invariants") && /\/ at 390px/.test(verText), `verify_app reports every check in one go (${verText.split("\n")[0]})`);
   await call("delete_file", { project: "smoke-test", path: "server/invariants.sql" });
   await call("write_file", { project: "smoke-test", path: "src/App.tsx", content: 'export default function App() {\n  return <div style={{ display: "flex" }}><nav style={{ display: "flex", gap: 8 }}>{[1, 2, 3, 4, 5, 6].map((i) => <a key={i} style={{ flex: "none", width: 120 }}>Link {i}</a>)}</nav></div>;\n}\n' });
   const wide = (await client.callTool({ name: "screenshot_app", arguments: { project: "smoke-test", width: 390 } }, undefined, { timeout: 180_000 })) as any;
@@ -359,6 +365,10 @@ ${ramp}`}`);
   const clip = (await client.callTool({ name: "screenshot_app", arguments: { project: "smoke-test", width: 390 } }, undefined, { timeout: 180_000 })) as any;
   const clipText = clip.content.find((c: any) => c.type === "text")?.text ?? "";
   check(/<nav> hides \d+px/.test(clipText) && clipText.includes("Link 6") && !/scrolls sideways/.test(clipText), "screenshot_app flags nav links hidden in a sideways-scrolling box on a phone");
+  await call("write_file", { project: "smoke-test", path: "src/App.tsx", content: 'export default function App() {\n  return <main>\n    <div style={{ display: "flex", width: 360 }}><input placeholder="Search" style={{ flex: 1, minWidth: 0 }} /><button style={{ flex: "none", width: 320 }}>A very long filter button</button></div>\n    <div style={{ display: "flex", width: 200 }}><strong style={{ flex: "none", width: 60, whiteSpace: "nowrap" }}>Thu, Nov 19 at noon</strong><span>Vinyasa Flow</span></div>\n  </main>;\n}\n' });
+  const cramped = (await client.callTool({ name: "screenshot_app", arguments: { project: "smoke-test", width: 390 } }, undefined, { timeout: 180_000 })) as any;
+  const crampedText = cramped.content.find((c: any) => c.type === "text")?.text ?? "";
+  check(/squeezed too narrow[^\n]*"Search"/.test(crampedText) && /text overlaps[^\n]*Thu, Nov 19/.test(crampedText), "screenshot_app flags squeezed inputs and overlapping text on a phone");
   await call("write_file", { project: "smoke-test", path: "scripts/dates.ts", content: [
     'import { userToday, isPastOrToday } from "../server/platform/dates.ts";',
     'import { db, run, get, transaction } from "../server/platform/db.ts";',
@@ -379,6 +389,30 @@ ${ramp}`}`);
   await call("query_db", { project: "smoke-test", sql: "UPDATE notes SET created_at = datetime('now', '-3 days') WHERE created_at = '2026-02-30 10:00:00'" });
   const slugged = await call("create_project", { name: "Any Name At All", slug: "custom-slug" });
   check(slugged.includes("slug: custom-slug"), "create_project accepts an explicit slug");
+  let unknownArg = "";
+  try { await call("verify_app", { project: "smoke-test", pages: ["/"] }); } catch (e) { unknownArg = (e as Error).message; }
+  check(/Unknown argument "pages"/.test(unknownArg) && unknownArg.includes("paths"), "tools reject unknown arguments and list the valid ones");
+  const routesSrc = await call("read_file", { project: "smoke-test", path: "server/routes.ts" });
+  await call("write_file", { project: "smoke-test", path: "server/routes.ts", content: routesSrc.replace("export function routes(router: Router): void {", 'export function routes(router: Router): void {\n  router.post("/probe-me", (req, res) => {\n    const b = req.body;\n    res.json({ names: b.items.map((i: { name: string }) => i.name.trim()) });\n  });\n  router.get("/everyone", requireUser, (_req, res) => {\n    res.json(all("SELECT u.email, u.name, n.body FROM notes n JOIN users u ON u.id = n.user_id ORDER BY n.id LIMIT 50"));\n  });') });
+  await call("start_app", { project: "smoke-test" });
+  await call("query_db", { project: "smoke-test", sql: "INSERT OR IGNORE INTO users (email, name, password_hash) VALUES ('b@example.com', 'B', 'no-login')" });
+  await call("query_db", { project: "smoke-test", sql: "INSERT INTO notes (user_id, body) SELECT id, 'note of b' FROM users WHERE email = 'b@example.com'" });
+  const notesBefore = await call("query_db", { project: "smoke-test", sql: "SELECT COUNT(*) AS n FROM notes" });
+  const probed = (await client.callTool({ name: "verify_app", arguments: { project: "smoke-test", paths: ["/"], signed_in_as: "a@example.com" } }, undefined, { timeout: 240_000 })) as any;
+  const probedText = probed.content.find((c: any) => c.type === "text")?.text ?? "";
+  const notesAfter = await call("query_db", { project: "smoke-test", sql: "SELECT COUNT(*) AS n FROM notes" });
+  check(/✗ API input/.test(probedText) && /POST \/api\/probe-me crashed \(500\)/.test(probedText) && /brand-new account[^\n]*\/api\/everyone/.test(probedText) && notesBefore === notesAfter, `verify_app's API probe finds a crash on bad input and a route a stranger can read, and leaves the data as it was (${/POST \/api\/probe-me[^\n]{0,60}/.exec(probedText)?.[0] ?? probedText.slice(0, 200)})`);
+
+  // Another program takes the app's port while it is stopped: start_app must move, not report the other program.
+  const before = (await call("start_app", { project: "smoke-test" })).match(/localhost:(\d+)/)![1];
+  await call("stop_app", { project: "smoke-test" });
+  const squatter = http.createServer((_q, s) => { s.setHeader("Content-Type", "application/json"); s.end('{"ok":true}'); });
+  await new Promise<void>((r) => squatter.listen(Number(before), () => r()));
+  const moved = await call("start_app", { project: "smoke-test" });
+  const after = moved.match(/localhost:(\d+)/)?.[1];
+  const ownHealth = after ? await (await fetch(`http://localhost:${after}/api/health`)).json() as any : {};
+  await new Promise<void>((r) => squatter.close(() => r()));
+  check(after && after !== before && "instance" in ownHealth, `start_app moves off a port another program holds (${before} → ${after})`);
 
   let badPkg = "";
   try { await call("add_package", { project: "smoke-test", package: "Not A Package!" }); } catch (e) { badPkg = (e as Error).message; }

@@ -10,6 +10,15 @@ const SKIP = new Set(["sessions", "_migrations", "sqlite_sequence"]);
 const DATE_NAME = /(_at|date|day|_on|time)$/i;
 const DATE_VALUE = /^\d{4}-\d{2}-\d{2}([ T]\d{2}:\d{2}(:\d{2})?)?/;
 
+/** A share that never rounds a minority away: 330 of 331 is "99.7%", 1 of 331 is "0.3%", not 100% and 0%. */
+function share(k: number, n: number): string {
+  const p = (k / n) * 100;
+  if (k === n) return "100%";
+  if (p >= 99.5) return `${Math.floor(p * 10) / 10}%`;
+  if (p < 0.5) return `${Math.max(0.1, Math.round(p * 10) / 10)}%`;
+  return `${Math.round(p)}%`;
+}
+
 export function profileData(slug: string, onlyTable?: string): string {
   const file = path.join(projectDir(slug), "data", "app.db");
   if (!fs.existsSync(file)) throw new Error("The database does not exist yet. Call start_app or run your seed first.");
@@ -46,7 +55,8 @@ export function profileData(slug: string, onlyTable?: string): string {
       for (const c of cols) {
         const col = `"${c.name.replace(/"/g, '""')}"`;
         const nulls = Number(one<{ n: number }>(`SELECT COUNT(*) AS n FROM ${id} WHERE ${col} IS NULL`).n);
-        const nullNote = nulls ? `, ${Math.round((nulls / n) * 100)}% NULL` : "";
+        const pct = (nulls / n) * 100;
+        const nullNote = nulls ? `, ${nulls === n ? 100 : pct > 99 ? Math.floor(pct * 10) / 10 : Math.max(0.1, Math.round(pct * 10) / 10)}% NULL (${(n - nulls).toLocaleString("en-US")} set)` : "";
         const sample = one<{ v: unknown } | undefined>(`SELECT ${col} AS v FROM ${id} WHERE ${col} IS NOT NULL LIMIT 1`)?.v;
         if (sample === undefined) { out.push(`- ${c.name}: all NULL`); continue; }
         if (typeof sample === "string" && (DATE_NAME.test(c.name) || DATE_VALUE.test(sample)) && DATE_VALUE.test(sample)) {
@@ -115,17 +125,20 @@ export function profileData(slug: string, onlyTable?: string): string {
         if (typeof sample === "number" || typeof sample === "bigint") {
           if (distinct <= 6) {
             const d = q<{ v: number; n: number }>(`SELECT ${col} AS v, COUNT(*) AS n FROM ${id} GROUP BY v ORDER BY n DESC`);
-            out.push(`- ${c.name}: ${d.map((x) => `${x.v}=${Math.round((Number(x.n) / n) * 100)}%`).join(", ")}${nullNote}`);
+            out.push(`- ${c.name}: ${d.map((x) => `${x.v}=${share(Number(x.n), n)}`).join(", ")}${nullNote}`);
           } else {
             const r = one<{ lo: number; avg: number; hi: number }>(`SELECT MIN(${col}) AS lo, AVG(${col}) AS avg, MAX(${col}) AS hi FROM ${id}`);
             out.push(`- ${c.name}: min ${r.lo}, avg ${Math.round(Number(r.avg) * 100) / 100}, max ${r.hi}${nullNote}`);
-            if (Number(r.lo) < 0 && /(count|qty|quantity|stock|price|amount|total|views)$/i.test(c.name) && !/amount/i.test(c.name)) warnings.push(`${t}.${c.name} has negative values`);
+            // Signed ledgers (stock moves, adjustments, transactions) are meant to go negative.
+            const signed = /(move|movement|ledger|adjust|transaction|journal|entr(y|ies)|delta|change)/i.test(t) || /(change|delta|diff|adjust|net|signed)/i.test(c.name);
+            if (Number(r.lo) < 0 && !signed && /(count|qty|quantity|stock|price|total|views)$/i.test(c.name))
+              warnings.push(`${t}.${c.name} has negative values (if it's a signed ledger, name the column e.g. qty_change)`);
           }
           continue;
         }
         if (distinct <= 12) {
           const d = q<{ v: string; n: number }>(`SELECT ${col} AS v, COUNT(*) AS n FROM ${id} GROUP BY v ORDER BY n DESC`);
-          out.push(`- ${c.name}: ${d.map((x) => `${x.v ?? "NULL"} ${Math.round((Number(x.n) / n) * 100)}%`).join(", ")}`);
+          out.push(`- ${c.name}: ${d.map((x) => `${x.v ?? "NULL"} ${share(Number(x.n), n)}`).join(", ")}`);
           // A single value is suspicious for statuses/categories, normal for things like a file type or currency.
           if (distinct === 1 && n > 20 && /(status|state|stage|category|kind|role|priority|level|plan)$/i.test(c.name)) warnings.push(`${t}.${c.name} has the same value in every row`);
         } else {
@@ -133,6 +146,41 @@ export function profileData(slug: string, onlyTable?: string): string {
           out.push(`- ${c.name}: ${distinct.toLocaleString("en-US")} distinct${dupes > n * 0.5 && n > 100 ? " (many repeats)" : ""}${nullNote}`);
         }
       }
+    }
+    // Nothing in flight: the schema allows work-in-progress states (allocated, picking, open…) but the seed finished
+    // everything, so the screens that show live work are empty in the demo.
+    const IN_FLIGHT = /^(new|open|pending|allocated|picking|picked|packing|packed|in_progress|processing|assigned|waiting|queued|draft|sent|booked|scheduled|awaiting\w*|ready\w*|partially_\w+|partial|on_hold)$/i;
+    for (const t of tables) {
+      const ddl = one<{ sql: string } | undefined>("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?", t)?.sql ?? "";
+      for (const m of ddl.matchAll(/(\w+)\s+TEXT[^,]*?CHECK\s*\(\s*\1\s+IN\s*\(([^)]*)\)/gi)) {
+        const col = m[1];
+        if (!/(status|state|stage)$/i.test(col)) continue;
+        const allowed = [...m[2].matchAll(/'([^']+)'/g)].map((x) => x[1]);
+        const live = allowed.filter((v) => IN_FLIGHT.test(v));
+        if (!live.length) continue;
+        const total = Number(one<{ n: number }>(`SELECT COUNT(*) AS n FROM "${t}"`).n);
+        if (total < 1000) continue;
+        const counts = q<{ v: string; n: number }>(`SELECT "${col}" AS v, COUNT(*) AS n FROM "${t}" GROUP BY 1`);
+        const empty = live.filter((v) => !counts.some((c) => c.v === v && Number(c.n) > 0));
+        if (empty.length)
+          warnings.push(`${t}.${col}: no rows are ${empty.join(" / ")} (of ${total.toLocaleString("en-US")}), so any screen for ${empty.length > 1 ? "those stages" : "that stage"} is empty in the demo. Leave some recent items mid-flow when seeding (or drop the state if it's never used).`);
+      }
+    }
+    // People booking like machines: the same customer twice on one day in an appointment-style table.
+    for (const t of tables) {
+      if (!/(booking|appointment|reservation|visit)s?$/i.test(t)) continue;
+      const cols = q<{ name: string }>(`PRAGMA table_info("${t}")`).map((c) => c.name);
+      const actor = cols.find((c) => /^(customer_email|client_email|email|customer_id|client_id|patient_id|member_id|user_id|guest_id)$/i.test(c));
+      const when = cols.find((c) => /^(date|day|starts?_at|start_time|scheduled_at|scheduled_for|booked_for|slot_at|appointment_at)$/i.test(c));
+      if (!actor || !when) continue;
+      const status = cols.find((c) => /^(status|state)$/i.test(c));
+      const live = status ? `WHERE lower("${status}") NOT IN ('cancelled','canceled','void','declined','rejected')` : "";
+      try {
+        const r = one<{ n: number; days: number }>(`SELECT COUNT(*) AS n, COUNT(DISTINCT "${actor}" || '|' || date("${when}")) AS days FROM "${t}" ${live}`);
+        const repeats = Number(r.n) - Number(r.days);
+        if (Number(r.n) >= 100 && repeats > Number(r.n) * 0.02)
+          warnings.push(`${t}: ${repeats} times the same ${actor} has two or more ${t} on one day (${Math.round((repeats / Number(r.n)) * 1000) / 10}% of rows). Real people book at their own rhythm: give each person a cadence and favourites (fake.visits, fake.prefer) instead of a random person per slot.`);
+      } catch { /* unusual schema: skip */ }
     }
     // Children dated before the record they belong to (an order placed before its buyer signed up).
     if (!onlyTable) {
@@ -154,7 +202,7 @@ export function profileData(slug: string, onlyTable?: string): string {
             const line = `${child}: ${bad} of ${total} rows have ${childCreated} before their ${fk.table} row was created (${fk.from} → ${fk.table}.${parentCreated})`;
             // Nearly all rows, or a staff/later link (assignee, a portal account linked later): usually accounts created at
             // seed time. Worth knowing, not a per-row bug.
-            if (bad > total * 0.6 || /^(assign|owner|staff|agent|approv|manag|review|handl|updated|closed)/i.test(fk.from))
+            if (bad > total * 0.6 || /^(assign|owner|staff|agent|approv|manag|review|handl|updated|closed|provid|doctor|teacher|instructor|barber|coach|trainer|host|stylist)/i.test(fk.from))
               out.push(`
 (note) ${line}: probably accounts created at seed time; back-date them if the UI shows "member since".`);
             else

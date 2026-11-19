@@ -15,6 +15,8 @@ export interface Email {
   text: string;
   html?: string;
   replyTo?: string;
+  /** Files to attach, e.g. [{ filename: "INV-0042.pdf", content: pdfBuffer }]. */
+  attachments?: { filename: string; content: Buffer | Uint8Array }[];
 }
 
 export interface SendResult {
@@ -47,6 +49,9 @@ async function deliver(email: Email): Promise<string> {
       text: email.text,
       ...(email.html ? { html: email.html } : {}),
       ...(email.replyTo ? { reply_to: email.replyTo } : {}),
+      ...(email.attachments?.length
+        ? { attachments: email.attachments.map((a) => ({ filename: a.filename, content: Buffer.from(a.content).toString("base64") })) }
+        : {}),
     }),
     signal: AbortSignal.timeout(15_000),
   });
@@ -80,7 +85,8 @@ export async function sendEmail(email: Email): Promise<SendResult> {
   fs.mkdirSync(OUTBOX, { recursive: true });
   fs.writeFileSync(
     path.join(OUTBOX, `${sentAt.replace(/[:.]/g, "-")}-${id}.json`),
-    JSON.stringify({ id, sentAt, status, providerId, ...email }, null, 2),
+    // The outbox keeps attachment names and sizes, not their bytes.
+    JSON.stringify({ id, sentAt, status, providerId, ...email, attachments: email.attachments?.map((a) => ({ filename: a.filename, bytes: a.content.byteLength })) }, null, 2),
   );
   console.log(`[email] "${email.subject}" → ${email.to}: ${status}`);
   if (error) throw error;

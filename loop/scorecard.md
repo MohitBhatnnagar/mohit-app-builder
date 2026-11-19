@@ -163,3 +163,13 @@ Not covered automatically: the kanban drag gesture itself (its API was tested), 
 | 52 | Bench: lettings | API stored 2027-02-30 and 2026-02-31 (regex-only validation) | Data check flags values `date()` can't parse |
 | 53 | Bench: lettings | Nested `transaction()` crashed ("cannot start a transaction within a transaction") | Nests with savepoints |
 | 54 | Bench: all three | `create_project` ignored a slug (stray projects); no dropdown action; `confirm()` blocked screenshots | `slug` parameter; `select` action; dialogs auto-accepted and noted |
+| 55 | Run 2: booking | Seeds drew a random person and service per booking: regulars every 9 days, same-day doubles | `fake.prefer`, `fake.visits`; data check flags same-day repeats per person in booking/appointment tables |
+| 56 | Run 2: invoicing / warehouse | APIs crashed (500) on `[null]` and wrong-type bodies; nothing sent bad input | verify_app **API input** check: bad input to every write route (DB snapshotted and restored) |
+| 57 | Run 2: judges | Tools silently ignored unknown arguments (`pages` for `paths`) | Every tool rejects unknown arguments and lists the valid ones |
+| 58 | Run 2: ticketing | Guest orders claimable by signing up with the buyer's (unverified) email | Platform email verification, `requireVerified`, guide rule |
+| 59 | Run 2: lettings | Port clash: start_app reported "running" while another app answered on the port | All-interface port check, instance id in `/api/health`, automatic move to a new port |
+| 60 | Run 2: classes | Phone: squeezed search input, overlapping text | Screenshots flag inputs under 64 px and overlapping text |
+| 61 | Run 2: warehouse | A self-signed-up stranger read staff data | API probe signs up a fresh account and compares what it sees |
+| 62 | Run 2: warehouse | Demo had nothing in flight, so the pick list was empty | Data check flags allowed in-progress states with no rows |
+| 63 | Run 2: warehouse | Dashboard API 560 ms | Screenshots time API calls and flag any over 300 ms |
+| 64 | Run 2: builders | No email attachments, no `app_logs` search, signed ledgers flagged as negative, "100% NULL" for 99.96% | `attachments`, `search`, signed-ledger exemption, exact shares |

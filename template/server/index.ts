@@ -31,7 +31,7 @@ app.use("/api", (req, res, next) => {
 
 const api = express.Router();
 api.get("/health", (_req, res) => {
-  res.json({ ok: true });
+  res.json({ ok: true, instance: process.env.MOHIT_INSTANCE ?? null });
 });
 authRoutes(api);
 storageRoutes(api);

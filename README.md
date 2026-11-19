@@ -95,7 +95,7 @@ The AI will call `create_project`, write the code, call `start_app`, check it wi
 | `typecheck` | Type-check an app with TypeScript in about a second; broken imports and unknown names are listed first |
 | `profile_data` | Sanity-check seeded data: counts, date ranges, future dates, impossible dates, rows dated before what they belong to, monthly trend (and suspiciously steep ramps), stale open items, distributions |
 | `check_invariants` | Run the app's `server/invariants.sql`: rules its data must always satisfy, each a SELECT returning the rows that break it |
-| `verify_app` | One call before hand-over: type check, start, data check, invariants, and desktop + phone screenshots of the main pages |
+| `verify_app` | One call before hand-over: type check, start, data check, invariants, desktop + phone screenshots of the main pages (layout, slow API calls), and an API probe with bad input and a stranger's account |
 | `save_checkpoint` / `list_checkpoints` / `checkpoint_diff` / `restore_checkpoint` | Version history |
 | `add_package` | Install an npm package (install scripts disabled) |
 | `run_script` / `reset_data` | Run seed or data-fix scripts (with a timeout); wipe an app's data to start fresh |
@@ -121,7 +121,7 @@ Each app is a normal folder with its own git history: `projects/<name>/`. Run on
 - Restoring a checkpoint restores code, not data. The database and uploads are not versioned.
 - AI helpers use `claude-opus-5-5` by default (set `MOHIT_AI_MODEL` to change) with server-side
   refusal fallback enabled. Every AI call is billed to your Anthropic account.
-- `npm run smoke` runs 75 end-to-end checks. It strips real API keys from its environment and uses a
+- `npm run smoke` runs 80 end-to-end checks. It strips real API keys from its environment and uses a
   mock email server, so it never sends mail or spends money.
 - `start_app` and `run_script` keep each app's `server/platform/` in sync with Mohit, so platform fixes
   reach existing apps (the update is saved as a checkpoint).
@@ -166,6 +166,7 @@ building block, not guide text.
 | Run | Specs | Delivered quality | Escapes | Mohit changes from it |
 | --- | --- | --- | --- | --- |
 | [Pilot, 2026-11-19](loop/benchmark/results/2026-11-19-pilot.md) | habits, ticketing, lettings | 26/30 (87%) | 4 (13%) | user's-today helper, child-before-parent and impossible-date data checks, hidden-content phone check, nestable transactions |
+| [Run 2, 2026-11-19](loop/benchmark/results/2026-11-19-run2.md) | all 8 | 71/80 (89%); specs 1–4: 95% | 9 (11%) | API input probe (crashes, impossible dates, strangers reading staff data), email verification, phone checks for squeezed inputs and overlapping text, slow-API timing, in-flight seed check, port-clash fix |
 
 ## Roadmap
 

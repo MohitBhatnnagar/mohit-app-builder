@@ -25,11 +25,33 @@ import { secretsReport } from "./secrets.ts";
 import { profileData } from "./profile.ts";
 import { typecheck } from "./typecheck.ts";
 import { checkInvariants, formatInvariants } from "./invariants.ts";
+import { probeApi, restoreSnapshot } from "./probe.ts";
 
 const server = new McpServer(
   { name: "mohit", version: "0.1.0" },
   { instructions: GUIDE },
 );
+
+// Reject unknown arguments instead of silently dropping them: a misspelt or guessed name (slug, search, pages)
+// used to be ignored, so the call "worked" and did something other than intended.
+{
+  const register = server.registerTool.bind(server) as (name: string, config: Record<string, unknown>, cb: unknown) => unknown;
+  (server as unknown as { registerTool: typeof register }).registerTool = (name, config, cb) => {
+    const shape = config.inputSchema as z.ZodRawShape | undefined;
+    if (!shape) return register(name, config, cb);
+    const known = Object.keys(shape);
+    return register(
+      name,
+      {
+        ...config,
+        inputSchema: z.strictObject(shape, {
+          error: (iss) => (iss.code === "unrecognized_keys" ? `Unknown argument ${(iss.keys as string[]).map((k) => `"${k}"`).join(", ")}. ${name} takes: ${known.join(", ")}.` : undefined),
+        }),
+      },
+      cb,
+    );
+  };
+}
 
 type Content = { type: "text"; text: string } | { type: "image"; data: string; mimeType: string };
 type Result = { content: Content[]; isError?: boolean };
@@ -424,10 +446,10 @@ server.registerTool(
   "verify_app",
   {
     description:
-      "One check of everything before telling the user an app works: type check, start, data check (profile_data warnings), invariants (server/invariants.sql), and desktop + phone screenshots of each page you list, with console errors, failed API calls and sideways scrolling. Returns a pass/fail report; fix every ✗ and run it again.",
+      "One check of everything before telling the user an app works: type check, start, data check (profile_data warnings), invariants (server/invariants.sql), desktop + phone screenshots of each page you list (console errors, failed API calls, sideways scrolling, hidden content), and an API probe that sends bad input to every write route (crashes, impossible dates; the database is restored afterwards). Returns a pass/fail report; fix every ✗ and run it again.",
     inputSchema: {
       project,
-      paths: z.array(z.string()).min(1).max(12).default(["/"]).describe("The app's main pages, e.g. [\"/\", \"/orders\", \"/settings\"]."),
+      paths: z.array(z.string()).min(1).max(20).default(["/"]).describe("The app's main pages (up to 20), including a detail page with a real id, e.g. [\"/\", \"/orders\", \"/orders/12\"]."),
       signed_in_as: z.string().optional().describe("Email of a seeded user to view the pages as."),
       images: z.boolean().default(false).describe("Also return the phone screenshots (costs more; use when you need to look)."),
     },
@@ -477,10 +499,23 @@ server.registerTool(
           }
         }
       sections.push({ name: "Pages (desktop + phone)", ok: pagesOk, detail: pageLines.join("\n") });
+      // Bad input to every write route; the database is snapshotted and restored, so demo data is untouched.
+      try {
+        const probe = await probeApi(project, url, signed_in_as);
+        if (probe.wrote) {
+          await stopApp(project);
+          restoreSnapshot(project);
+          await startApp(project);
+        }
+        sections.push({ name: "API input", ok: probe.ok, detail: probe.lines.join("\n") });
+      } catch (e) {
+        restoreSnapshot(project);
+        sections.push({ name: "API input", ok: false, detail: `Probe failed: ${(e as Error).message.slice(0, 300)}` });
+      }
     }
     const passed = sections.filter((s) => s.ok).length;
     const report =
-      `verify_app: ${passed} of ${sections.length} checks passed${passed === sections.length ? ". Still look at the screenshots yourself, and read the numbers on screen like a skeptic." : ". Fix every ✗ and run verify_app again."}\n\n` +
+      `verify_app: ${passed} of ${sections.length} checks passed${passed === sections.length ? `. Still look at the screenshots yourself${images ? "" : " (call again with images: true to get the phone screenshots, or screenshot_app any page)"}, and read the numbers on screen like a skeptic.` : ". Fix every ✗ and run verify_app again."}\n\n` +
       sections.map((s) => `${s.ok ? "✓" : "✗"} ${s.name}\n${s.detail.split("\n").map((l) => `   ${l}`).join("\n")}`).join("\n\n");
     content.unshift({ type: "text", text: report });
     return { content, isError: passed !== sections.length };
@@ -519,7 +554,7 @@ server.registerTool(
     const wasRunning = await stopApp(project);
     const dir = path.join(projectDir(project), "data");
     fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
-    return text(`Deleted ${project}'s data.${wasRunning ? " The app was stopped." : ""} Run your seed script or start_app to recreate the database.`);
+    return text(`Deleted ${project}'s data.${wasRunning ? " The app was stopped: call start_app again after re-seeding." : ""} Run your seed script or start_app to recreate the database.`);
   }),
 );
 
@@ -542,11 +577,15 @@ server.registerTool(
   "app_logs",
   {
     description: "Recent server output of an app (errors, request logs, migration output). Also works after a crash.",
-    inputSchema: { project, lines: z.number().int().min(1).max(500).default(100) },
+    inputSchema: {
+      project,
+      lines: z.number().int().min(1).max(500).default(100),
+      search: z.string().optional().describe('Only lines containing this text (case-insensitive), e.g. "[job]" or "error".'),
+    },
   },
-  safe(({ project, lines }) => {
+  safe(({ project, lines, search }) => {
     projectDir(project);
-    return text(appLogs(project, lines));
+    return text(appLogs(project, lines, search));
   }),
 );
 

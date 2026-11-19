@@ -112,6 +112,11 @@ CREATE TABLE IF NOT EXISTS sessions (
   user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   expires_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS email_verifications (
+  token TEXT PRIMARY KEY,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  expires_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS files (
   id TEXT PRIMARY KEY,
   user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
@@ -125,6 +130,9 @@ CREATE TABLE IF NOT EXISTS files (
 /** Apply the platform schema, then any new server/migrations/*.sql in name order. */
 export function migrate(): void {
   db.exec(PLATFORM_SCHEMA);
+  // Added later: when the user proved they own their email (null = not yet). Older apps get the column here.
+  if (!all<{ name: string }>("PRAGMA table_info(users)").some((c) => c.name === "email_verified_at"))
+    db.exec("ALTER TABLE users ADD COLUMN email_verified_at TEXT");
   db.exec(
     "CREATE TABLE IF NOT EXISTS _migrations (name TEXT PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT (datetime('now')))",
   );

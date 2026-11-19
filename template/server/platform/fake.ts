@@ -188,6 +188,35 @@ export function createFake(seed = 42) {
      * 1.3 = a waitlist). Use it instead of drawing demand from the whole user base, which overfills popular things.
      */
     demand: (capacity: number, popularity: number) => Math.max(0, Math.round(capacity * popularity * (0.8 + r() * 0.4))),
+    /**
+     * A person's habits, fixed once per person: their favourite few items, chosen mostly (80%) from then on.
+     *   const likes = fake.prefer(services, 2);  ...  likes()  → usually one of their 2 favourites
+     * Real customers rebook the same service and barber; a fresh random pick per booking reads as fake.
+     */
+    prefer: <T>(items: readonly T[], k = 2, loyalty = 0.8): (() => T) => {
+      const favs = [...items].sort(() => r() - 0.5).slice(0, Math.max(1, Math.min(k, items.length)));
+      return () => (r() < loyalty ? favs[Math.floor(r() * favs.length)] : items[Math.floor(r() * items.length)]);
+    },
+    /**
+     * One person's visit times at their own rhythm: every `every` days (e.g. [21, 42] for a haircut every 3–6 weeks),
+     * from `from` (ms) until now, sorted, never in the future, at most one per day. Combine with fake.when-style
+     * hours by passing `hours`. Use per customer/patient/member instead of drawing every booking at random.
+     */
+    visits: (from: number, every: [number, number], opts: { hours?: [number, number]; weekdays?: boolean } = {}): number[] => {
+      const out: number[] = [];
+      const [h0, h1] = opts.hours ?? [9, 18];
+      let t = from + r() * every[1] * DAY;
+      while (t < Date.now()) {
+        const d = new Date(t);
+        const dow = d.getUTCDay();
+        if (!(opts.weekdays && (dow === 0 || dow === 6))) {
+          d.setUTCHours(h0 + Math.floor(r() * Math.max(1, h1 - h0)), [0, 15, 30, 45][Math.floor(r() * 4)], 0, 0);
+          if (d.getTime() < Date.now()) out.push(d.getTime());
+        }
+        t += (every[0] + r() * (every[1] - every[0])) * DAY;
+      }
+      return out;
+    },
   };
   return fake;
 }

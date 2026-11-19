@@ -48,7 +48,7 @@ export async function typecheck(slug: string): Promise<{ ok: boolean; report: st
   }
   // Platform files are Mohit's; their errors are not the app author's to fix.
   const own = errors.filter((e) => !e.file.startsWith("server/platform/"));
-  if (!own.length) return { ok: true, report: `No type errors (${seconds}s).` };
+  if (!own.length) return { ok: true, report: `No type errors in src/ and server/ (${seconds}s).` };
 
   const runtime = own.filter((e) => RUNTIME.has(e.code));
   const rank = (e: TsError) => (RUNTIME.has(e.code) ? 0 : 2) + (e.file.startsWith("src/") ? 0 : 1);

@@ -19,18 +19,24 @@ const running = new Map<string, RunningApp>();
 // Logs survive a crash so the AI can read why the app died.
 const lastLogs = new Map<string, string[]>();
 
-function portFree(port: number): Promise<boolean> {
+function canListen(port: number, host?: string): Promise<boolean> {
   return new Promise((resolve) => {
     const srv = net.createServer();
     srv.once("error", () => resolve(false));
-    srv.listen(port, "127.0.0.1", () => srv.close(() => resolve(true)));
+    srv.listen({ port, host }, () => srv.close(() => resolve(true)));
   });
 }
 
-async function pickPort(slug: string): Promise<number> {
+/** Free on every interface: apps listen on all of them, so a loopback-only test misses a port another app holds. */
+async function portFree(port: number): Promise<boolean> {
+  return (await canListen(port)) && (await canListen(port, "127.0.0.1"));
+}
+
+async function pickPort(slug: string, avoid?: number): Promise<number> {
   const meta = readMeta(slug);
   if (meta.port && (await portFree(meta.port))) return meta.port;
   const taken = new Set([...running.values()].map((r) => r.port));
+  if (avoid) taken.add(avoid);
   for (let p = BASE_PORT; p < BASE_PORT + 500; p++) {
     if (!taken.has(p) && (await portFree(p))) {
       writeMeta({ ...meta, port: p });
@@ -40,14 +46,24 @@ async function pickPort(slug: string): Promise<number> {
   throw new Error("No free port found for the app.");
 }
 
-async function waitUntilUp(port: number, app: RunningApp, timeoutMs = 45000): Promise<void> {
+async function waitUntilUp(port: number, app: RunningApp, instance: string, timeoutMs = 45000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
+  const clash = () => app.logs.some((l) => /EADDRINUSE|address already in use/i.test(l));
   while (Date.now() < deadline) {
+    if (clash()) throw new Error(`Port ${port} is already used by another program, so this app could not start there.`);
     if (app.exitCode !== null) throw new Error("The app exited during startup.");
     try {
       const res = await fetch(`http://localhost:${port}/api/health`);
-      if (res.ok) return;
-    } catch {
+      if (res.ok) {
+        // Make sure it is THIS app answering, not another one on the same port.
+        const body = (await res.json().catch(() => ({}))) as { instance?: string | null };
+        if (body.instance && body.instance !== instance) throw new Error(`Another app is answering on port ${port}.`);
+        await new Promise((r) => setTimeout(r, 300));
+        if (clash() || app.exitCode !== null) throw new Error(`Port ${port} is already used by another program, so this app could not start there.`);
+        return;
+      }
+    } catch (e) {
+      if (/already used|Another app/.test((e as Error).message)) throw e;
       /* not listening yet */
     }
     await new Promise((r) => setTimeout(r, 400));
@@ -75,13 +91,26 @@ export async function warmUp(port: number): Promise<void> {
 export async function startApp(slug: string): Promise<{ url: string; restarted: boolean }> {
   const restarted = running.has(slug);
   if (restarted) await stopApp(slug);
+  try {
+    return { ...(await launch(slug)), restarted };
+  } catch (err) {
+    // Its saved port was taken by another program between the check and the start: move to a new port once.
+    if (!/already used by another program|Another app is answering/.test((err as Error).message)) throw err;
+    const meta = readMeta(slug);
+    writeMeta({ ...meta, port: undefined });
+    return { ...(await launch(slug, meta.port)), restarted };
+  }
+}
+
+async function launch(slug: string, avoid?: number): Promise<{ url: string }> {
   const dir = projectDir(slug);
-  const port = await pickPort(slug);
+  const port = await pickPort(slug, avoid);
+  const instance = `${slug}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
   // Secrets: shared Mohit/.env first, then the app's own .env (later file wins).
   const envArgs = envFiles(slug).map((f) => `--env-file-if-exists=${f}`);
   const child = spawn(process.execPath, [...envArgs, "server/index.ts"], {
     cwd: dir,
-    env: { ...process.env, PORT: String(port), NODE_ENV: "development", FORCE_COLOR: "0" },
+    env: { ...process.env, PORT: String(port), NODE_ENV: "development", FORCE_COLOR: "0", MOHIT_INSTANCE: instance },
     stdio: ["ignore", "pipe", "pipe"],
     windowsHide: true,
   });
@@ -103,14 +132,14 @@ export async function startApp(slug: string): Promise<{ url: string; restarted: 
   });
   running.set(slug, app);
   try {
-    await waitUntilUp(port, app);
+    await waitUntilUp(port, app, instance);
     await warmUp(port);
   } catch (err) {
     await stopApp(slug);
     const tail = app.logs.slice(-40).join("\n");
     throw new Error(`${(err as Error).message}\n\nLast log lines:\n${tail}`);
   }
-  return { url: `http://localhost:${port}`, restarted };
+  return { url: `http://localhost:${port}` };
 }
 
 export function stopApp(slug: string): Promise<boolean> {
@@ -133,9 +162,12 @@ export function appStatus(slug: string): { running: boolean; url?: string } {
   return app ? { running: true, url: `http://localhost:${app.port}` } : { running: false };
 }
 
-export function appLogs(slug: string, lines = 100): string {
-  const logs = running.get(slug)?.logs ?? lastLogs.get(slug) ?? [];
-  return logs.slice(-lines).join("\n") || "(no logs yet; start the app with start_app)";
+export function appLogs(slug: string, lines = 100, search?: string): string {
+  const all = running.get(slug)?.logs ?? lastLogs.get(slug) ?? [];
+  if (!all.length) return "(no logs yet; start the app with start_app)";
+  const needle = search?.toLowerCase();
+  const logs = needle ? all.filter((l) => l.toLowerCase().includes(needle)) : all;
+  return logs.slice(-lines).join("\n") || `(no log lines contain "${search}" among the last ${all.length})`;
 }
 
 /** Run a one-off TypeScript script inside the app (seed data, data fixes, reports). */

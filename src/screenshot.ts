@@ -20,7 +20,7 @@ async function launch(): Promise<Browser> {
 }
 
 /** Create a session row for `email` directly in the app's database. */
-function sessionFor(slug: string, email: string): string {
+export function sessionFor(slug: string, email: string): string {
   const db = new DatabaseSync(path.join(projectDir(slug), "data", "app.db"));
   try {
     db.exec("PRAGMA busy_timeout = 5000");
@@ -120,6 +120,14 @@ export async function screenshot(slug: string, baseUrl: string, opts: ShotOption
     page.on("response", (r) => {
       if (r.status() >= 400) notes.push(`HTTP ${r.status()} ${r.request().method()} ${shortUrl(r.url())}`);
     });
+    // Slow API calls: the server's time to answer (not the page's), measured per request.
+    const slow: string[] = [];
+    page.on("requestfinished", (req) => {
+      if (!/\/api\//.test(req.url()) || req.method() !== "GET") return;
+      const t = req.timing();
+      const ms = Math.round(t.responseStart - t.requestStart);
+      if (t.requestStart >= 0 && ms > 300) slow.push(`${shortUrl(req.url())} ${ms} ms`);
+    });
     let viteReloaded = false;
     page.on("requestfailed", (req) => {
       // Vite aborts its own dependency requests when it re-bundles new imports and reloads the page:
@@ -146,6 +154,12 @@ export async function screenshot(slug: string, baseUrl: string, opts: ShotOption
     await page.waitForTimeout(500);
     // Sideways scrolling is the most common phone-layout bug, and it is easy to miss in a screenshot
     // (the viewport just shows the left part). Say so, and name what is too wide.
+    // A path that lands on the app's own not-found page is a wrong path, not a passing page.
+    const notFound = await page.evaluate(() => {
+      const t = (document.body?.innerText ?? "").replace(/\s+/g, " ").trim();
+      return t.length < 400 && /(not found|404|doesn['’]t exist|does not exist|no such page|page you['’]re looking for)/i.test(t) ? t.slice(0, 120) : null;
+    }).catch(() => null);
+    if (notFound) notes.push(`page: this looks like a not-found page ("${notFound}"). Check the path, or use a real record's id/slug.`);
     const overflow = await page.evaluate(detectOverflow).catch(() => null);
     if (overflow)
       notes.push(
@@ -154,7 +168,14 @@ export async function screenshot(slug: string, baseUrl: string, opts: ShotOption
           (overflow.out.length ? ` Sticking out: ${overflow.out.join(", ")}.` : "") +
           " Usual fixes: min-width: 0 on flex/grid children, grid columns minmax(0, 1fr), flex-wrap, overflow-x: auto on wide tables and rows.",
       );
+    if (slow.length)
+      notes.push(`slow: ${[...new Set(slow)].slice(0, 4).join(", ")} (main API calls should answer in under 300 ms: add an index, a rollup table, or fewer queries per request).`);
     if ((opts.width ?? 1280) <= 600) {
+      const cramped = await page.evaluate(detectCramped).catch(() => ({ narrow: [], overlaps: [] }));
+      if (cramped.narrow.length)
+        notes.push(`layout: inputs squeezed too narrow to use on a phone: ${cramped.narrow.join("; ")}. Let the row wrap (flex-wrap) or put the input on its own line (width: 100%).`);
+      if (cramped.overlaps.length)
+        notes.push(`layout: text overlaps on a phone: ${cramped.overlaps.join("; ")}. Give the items room (wrap, stack, or min-width: 0 with text-overflow: ellipsis).`);
       const clipped = await page.evaluate(detectClipped).catch(() => []);
       for (const c of clipped)
         notes.push(
@@ -167,6 +188,53 @@ export async function screenshot(slug: string, baseUrl: string, opts: ShotOption
   } finally {
     await browser.close();
   }
+}
+
+/** Runs in the page: inputs squeezed too narrow to use, and text that overlaps other text (phone widths). */
+function detectCramped(): { narrow: string[]; overlaps: string[] } {
+  const visible = (el: Element) => {
+    const st = getComputedStyle(el);
+    const r = el.getBoundingClientRect();
+    return st.display !== "none" && st.visibility !== "hidden" && Number(st.opacity) > 0.05 && r.width > 0 && r.height > 0 && r.bottom > 0 && r.top < innerHeight * 3;
+  };
+  const name = (el: Element) => {
+    const t = ((el as HTMLInputElement).placeholder || el.getAttribute("aria-label") || el.textContent || "").replace(/\s+/g, " ").trim().slice(0, 24);
+    return `<${el.tagName.toLowerCase()}>${t ? ` "${t}"` : ""}`;
+  };
+  const narrow = [...document.querySelectorAll("input:not([type=checkbox]):not([type=radio]):not([type=hidden]):not([type=range]):not([type=color]), select, textarea")]
+    .filter((el) => visible(el) && el.getBoundingClientRect().width < 64)
+    .map((el) => `${name(el)} is ${Math.round(el.getBoundingClientRect().width)}px wide`);
+  // Leaf elements with their own text, outside SVG (charts draw labels on purpose).
+  const leaves = [...document.querySelectorAll("body *")].filter((el) => {
+    if (el.closest("svg") || !visible(el)) return false;
+    // Content of a closed <details> still reports boxes but isn't shown.
+    const closed = el.closest("details:not([open])");
+    if (closed && !el.closest("summary")) return false;
+    if (["fixed", "absolute", "sticky"].includes(getComputedStyle(el).position)) return false;
+    return [...el.childNodes].some((n) => n.nodeType === 3 && (n.textContent ?? "").trim().length > 1);
+  }).slice(0, 400);
+  const boxes = leaves.map((el) => {
+    // The text's own box, not the element's (a wide block with short text doesn't overlap its neighbour).
+    const range = document.createRange();
+    range.selectNodeContents(el);
+    return { el, r: range.getBoundingClientRect() };
+  }).filter((b) => b.r.width > 2 && b.r.height > 2);
+  const overlaps: string[] = [];
+  for (let i = 0; i < boxes.length && overlaps.length < 3; i++)
+    for (let j = i + 1; j < boxes.length && overlaps.length < 3; j++) {
+      const a = boxes[i], b = boxes[j];
+      if (a.el.contains(b.el) || b.el.contains(a.el)) continue;
+      const w = Math.min(a.r.right, b.r.right) - Math.max(a.r.left, b.r.left);
+      const h = Math.min(a.r.bottom, b.r.bottom) - Math.max(a.r.top, b.r.top);
+      // Real collisions cover much of the smaller text both ways; stacked labels (a big "19" over "Nov") only
+      // touch along an edge of their line boxes.
+      const minH = Math.min(a.r.height, b.r.height), minW = Math.min(a.r.width, b.r.width);
+      const sideBySide = h > 0.6 * minH && w >= 3; // text running into its neighbour on the same line
+      const onTop = w > 0.5 * minW && h > 0.5 * minH; // one text drawn over another
+      if (sideBySide || onTop)
+        overlaps.push(`${name(a.el)} overlaps ${name(b.el)}`);
+    }
+  return { narrow: narrow.slice(0, 3), overlaps };
 }
 
 /** Runs in the page: boxes that scroll or clip sideways and hide real content (nav links, table columns). */
