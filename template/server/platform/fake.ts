@@ -120,8 +120,74 @@ export function createFake(seed = 42) {
     futureDate: (days = 90) => new Date(Date.now() + r() * days * DAY).toISOString(),
     /** YYYY-MM-DD, `daysAgo` days before today. */
     day: (daysAgo: number) => new Date(Date.now() - daysAgo * DAY).toISOString().slice(0, 10),
+    /** YYYY-MM-DD in the server's LOCAL time zone (what a user calls "today"), `daysAgo` days before today.
+     *  Use for apps keyed by calendar day (habits, diaries, rotas); `day` is UTC and is off by one near midnight. */
+    localDay: (daysAgo = 0) => {
+      const d = new Date();
+      d.setDate(d.getDate() - daysAgo);
+      return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+    },
     /** SQLite datetime text ("YYYY-MM-DD HH:MM:SS") up to `days` ago, matches datetime('now') columns. */
     sqlDate: (days = 365) => new Date(Date.now() - r() * days * DAY).toISOString().slice(0, 19).replace("T", " "),
+
+    // ---- Realistic time and volume (the shapes seeds most often get wrong) ----
+    /** SQLite datetime text for a timestamp in ms: fake.sql(Date.now() - 3 * 864e5). */
+    sql: (t: number) => new Date(t).toISOString().slice(0, 19).replace("T", " "),
+    /**
+     * A moment between `from` and `to` (ms), never in the future. Options: hours [start, end) in UTC, e.g. [9, 17]
+     * for working hours; weekdays: true for Mon–Fri only. Returns null if the window is entirely in the future.
+     */
+    when: (from: number, to: number, opts: { hours?: [number, number]; weekdays?: boolean } = {}): number | null => {
+      const end = Math.min(to, Date.now());
+      if (end <= from) return null;
+      for (let tries = 0; tries < 30; tries++) {
+        let t = from + r() * (end - from);
+        if (opts.hours) {
+          const d = new Date(t);
+          const [h0, h1] = opts.hours;
+          d.setUTCHours(h0, 0, 0, 0);
+          t = +d + r() * (h1 - h0) * 3600_000;
+        }
+        const dow = new Date(t).getUTCDay();
+        if (opts.weekdays && (dow === 0 || dow === 6)) continue;
+        if (t >= from && t <= end) return Math.floor(t / 1000) * 1000;
+      }
+      return null;
+    },
+    /**
+     * n timestamps (ms, sorted, all in the past) spread over the last `days` days with a realistic shape:
+     * growth: the last month has `growth`× the volume of the first (1 = flat, 1.5 = a growing business);
+     * season: 12 monthly multipliers (Jan..Dec); hours/weekdays as in fake.when.
+     */
+    spread: (n: number, days: number, opts: { growth?: number; season?: number[]; hours?: [number, number]; weekdays?: boolean } = {}): number[] => {
+      const growth = opts.growth ?? 1.3;
+      const start = Date.now() - days * DAY;
+      const out: number[] = [];
+      for (let guard = 0; out.length < n && guard < n * 50; guard++) {
+        // Linear ramp from 1 to `growth` by rejection sampling, then seasonality.
+        const x = r();
+        const weight = (1 + (growth - 1) * x) / Math.max(1, growth);
+        const t0 = start + x * days * DAY;
+        const season = opts.season ? opts.season[new Date(t0).getUTCMonth()] / Math.max(...opts.season) : 1;
+        if (r() > weight * season) continue;
+        const t = fake.when(t0 - 12 * 3600_000, t0 + 12 * 3600_000, opts);
+        if (t !== null && t >= start) out.push(t);
+      }
+      return out.sort((a, b) => a - b);
+    },
+    /**
+     * A status that fits the item's age: fake.byAge(ageDays, [[2, { new: 3, open: 1 }], [30, { open: 2, done: 5 }], [Infinity, { done: 9, lost: 1 }]]).
+     * Each band applies up to that many days old. Stops old work from staying "open" forever and new work from being "done".
+     */
+    byAge: <K extends string>(ageDays: number, bands: [number, Record<K, number>][]): K => {
+      const band = bands.find(([upTo]) => ageDays <= upTo) ?? bands[bands.length - 1];
+      return fake.weighted(band[1]);
+    },
+    /**
+     * How many people want something that holds `capacity`, given its popularity (0 = nobody, 1 = exactly full,
+     * 1.3 = a waitlist). Use it instead of drawing demand from the whole user base, which overfills popular things.
+     */
+    demand: (capacity: number, popularity: number) => Math.max(0, Math.round(capacity * popularity * (0.8 + r() * 0.4))),
   };
   return fake;
 }

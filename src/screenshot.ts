@@ -36,7 +36,7 @@ function sessionFor(slug: string, email: string): string {
 }
 
 export interface ShotAction {
-  action: "click" | "fill" | "press" | "wait" | "goto";
+  action: "click" | "fill" | "press" | "select" | "wait" | "goto";
   /** Playwright selector: CSS ("button.primary"), text ("text=Classic cut") or role ("role=button[name='Book']"). For goto: a path. */
   target?: string;
   /** Text to type (fill), key name (press, e.g. "Enter"), or milliseconds (wait). */
@@ -69,6 +69,7 @@ async function runActions(page: import("playwright-core").Page, baseUrl: string,
         if (a.action === "click") await el.click();
         else if (a.action === "fill") await el.fill(a.value ?? "");
         else if (a.action === "press") await el.press(a.value ?? "Enter");
+        else if (a.action === "select") await el.selectOption({ label: a.value ?? "" }).catch(() => el.selectOption(a.value ?? ""));
       }
       await page.waitForLoadState("networkidle", { timeout: 5_000 }).catch(() => {});
       await page.waitForTimeout(150);
@@ -111,6 +112,11 @@ export async function screenshot(slug: string, baseUrl: string, opts: ShotOption
       notes.push(`console.${m.type()}: ${m.text()}${at}`);
     });
     page.on("pageerror", (e) => notes.push(`page error: ${e.message}`));
+    // confirm()/alert()/prompt() would block the page: accept them and note what they said.
+    page.on("dialog", (d) => {
+      notes.push(`dialog (${d.type()}) accepted: ${d.message().slice(0, 160)}`);
+      d.accept().catch(() => {});
+    });
     page.on("response", (r) => {
       if (r.status() >= 400) notes.push(`HTTP ${r.status()} ${r.request().method()} ${shortUrl(r.url())}`);
     });
@@ -148,11 +154,48 @@ export async function screenshot(slug: string, baseUrl: string, opts: ShotOption
           (overflow.out.length ? ` Sticking out: ${overflow.out.join(", ")}.` : "") +
           " Usual fixes: min-width: 0 on flex/grid children, grid columns minmax(0, 1fr), flex-wrap, overflow-x: auto on wide tables and rows.",
       );
+    if ((opts.width ?? 1280) <= 600) {
+      const clipped = await page.evaluate(detectClipped).catch(() => []);
+      for (const c of clipped)
+        notes.push(
+          `layout: ${c.box} hides ${c.hidden}px of its content sideways on a phone${c.items.length ? ` (out of view: ${c.items.join(", ")})` : ""}.` +
+            " Phone users rarely find sideways scroll inside a box: wrap nav links (flex-wrap) or use a menu, and show wide tables as stacked cards under 600px (or drop minor columns).",
+        );
+    }
     const png = (await page.screenshot({ fullPage: opts.fullPage, type: "png" })).toString("base64");
     return { png, notes: notes.slice(0, 30) };
   } finally {
     await browser.close();
   }
+}
+
+/** Runs in the page: boxes that scroll or clip sideways and hide real content (nav links, table columns). */
+function detectClipped(): { box: string; hidden: number; items: string[] }[] {
+  const out: { box: string; hidden: number; items: string[] }[] = [];
+  for (const el of document.querySelectorAll("body *")) {
+    if (el.closest("svg") || el.closest("[data-scroll-ok]")) continue;
+    const st = getComputedStyle(el);
+    if (!/(auto|scroll|hidden|clip)/.test(st.overflowX) || st.display === "none" || st.visibility === "hidden") continue;
+    const hidden = el.scrollWidth - el.clientWidth;
+    const r = el.getBoundingClientRect();
+    if (hidden <= 16 || r.width < 40 || r.height < 16) continue;
+    // Ignore boxes nested in another reported box, and text that is merely truncated with an ellipsis.
+    if (st.textOverflow === "ellipsis" && !el.children.length) continue;
+    if (el.parentElement?.closest("[data-mohit-clipped]")) continue;
+    (el as HTMLElement).dataset.mohitClipped = "1";
+    const cands = [...el.querySelectorAll("a, button, th, [role=tab]")];
+    const hiddenEls = cands.filter((c) => { const b = c.getBoundingClientRect(); return b.width > 0 && (b.left >= r.right - 2 || b.right <= r.left + 2); });
+    const items = [...new Set(hiddenEls.map((c) => (c.textContent ?? "").replace(/\s+/g, " ").trim().slice(0, 20)).filter(Boolean))].slice(0, 5);
+    const hasTable = !!el.querySelector("table");
+    const isNav = el.matches("nav, [role=navigation], header") || !!el.querySelector("nav, [role=navigation]") || !!el.closest("nav, [role=navigation], header");
+    const activeHidden = hiddenEls.some((c) => c.matches("[aria-current]:not([aria-current=false]), [aria-selected=true], [aria-pressed=true], .active, .selected, .is-active"));
+    // A chip/filter strip that scrolls is a normal phone pattern; navigation, tables, or a hidden selected item are not.
+    if (!((hasTable && (items.length || hidden > 80)) || (isNav && items.length) || activeHidden)) continue;
+    const cls = typeof el.className === "string" ? el.className.trim().split(/\s+/).filter(Boolean).slice(0, 2) : [];
+    out.push({ box: `<${el.tagName.toLowerCase()}${cls.length ? "." + cls.join(".") : ""}>`, hidden: Math.round(hidden), items });
+    if (out.length >= 4) break;
+  }
+  return out;
 }
 
 /** Runs in the page: null when nothing scrolls sideways, else the widest containers and the elements past the edge. */

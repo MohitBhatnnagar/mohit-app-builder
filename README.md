@@ -93,7 +93,9 @@ The AI will call `create_project`, write the code, call `start_app`, check it wi
 | `start_app` / `stop_app` / `app_logs` | Run apps, get preview URLs, read errors |
 | `screenshot_app` | See a page in headless Edge/Chrome (any width, optionally signed in), run click/fill steps through a flow first, and get console errors, failed requests and sideways-scrolling layouts |
 | `typecheck` | Type-check an app with TypeScript in about a second; broken imports and unknown names are listed first |
-| `profile_data` | Sanity-check seeded data: counts, date ranges, future dates, monthly trend (and suspiciously steep ramps), stale open items, distributions |
+| `profile_data` | Sanity-check seeded data: counts, date ranges, future dates, impossible dates, rows dated before what they belong to, monthly trend (and suspiciously steep ramps), stale open items, distributions |
+| `check_invariants` | Run the app's `server/invariants.sql`: rules its data must always satisfy, each a SELECT returning the rows that break it |
+| `verify_app` | One call before hand-over: type check, start, data check, invariants, and desktop + phone screenshots of the main pages |
 | `save_checkpoint` / `list_checkpoints` / `checkpoint_diff` / `restore_checkpoint` | Version history |
 | `add_package` | Install an npm package (install scripts disabled) |
 | `run_script` / `reset_data` | Run seed or data-fix scripts (with a timeout); wipe an app's data to start fresh |
@@ -119,7 +121,7 @@ Each app is a normal folder with its own git history: `projects/<name>/`. Run on
 - Restoring a checkpoint restores code, not data. The database and uploads are not versioned.
 - AI helpers use `claude-opus-5-5` by default (set `MOHIT_AI_MODEL` to change) with server-side
   refusal fallback enabled. Every AI call is billed to your Anthropic account.
-- `npm run smoke` runs 67 end-to-end checks. It strips real API keys from its environment and uses a
+- `npm run smoke` runs 76 end-to-end checks. It strips real API keys from its environment and uses a
   mock email server, so it never sends mail or spends money.
 - `start_app` and `run_script` keep each app's `server/platform/` in sync with Mohit, so platform fixes
   reach existing apps (the update is saved as a checkpoint).
@@ -149,6 +151,21 @@ scored lowest; its fixes target the bugs that only showed up in the browser: a `
 `insertMany` errors, and phone-overflow detection in screenshots. Batch 6, built strictly through that workflow
 (typecheck, profile, phone screenshots), scored best so far: no page crashes and no layout failures; its misses
 were business-logic slips found by reading the numbers.
+
+### The benchmark (since November 2026)
+
+Seven batches of ever-harder apps averaged 74% first-pass. A review of all 21 apps found the method was the
+problem: a new target every time, the builder grading itself, and mistakes Mohit's own checks caught still
+counted as failures, while written advice rarely stopped a repeat. Automatic checks did: phone overflow and
+console crashes vanished once Mohit detected them. So the loop is now a fixed benchmark
+([loop/benchmark](loop/benchmark/README.md)): 8 fixed specs, each built by a fresh agent and graded by an
+independent judge against hidden acceptance checks. It measures **delivered quality** (target ≥ 95%) and
+**escapes**, failures nothing in Mohit flagged (target ≤ 5%). Every escape becomes an automatic check or a
+building block, not guide text.
+
+| Run | Specs | Delivered quality | Escapes | Mohit changes from it |
+| --- | --- | --- | --- | --- |
+| [Pilot, 2026-11-19](loop/benchmark/results/2026-11-19-pilot.md) | habits, ticketing, lettings | 26/30 (87%) | 4 (13%) | user's-today helper, child-before-parent and impossible-date data checks, hidden-content phone check, nestable transactions |
 
 ## Roadmap
 

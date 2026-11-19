@@ -70,8 +70,9 @@ function escapeHtml(s: string): string {
   return s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]!);
 }
 
-export function createProject(name: string, description: string): ProjectMeta {
-  const slug = slugify(name);
+export function createProject(name: string, description: string, wanted?: string): ProjectMeta {
+  const slug = slugify(wanted || name);
+  if (!slug) throw new Error("The project needs a name with letters or digits.");
   const dir = path.join(PROJECTS_DIR, slug);
   if (fs.existsSync(dir)) throw new Error(`A project called "${slug}" already exists. Pick another name.`);
   fs.mkdirSync(PROJECTS_DIR, { recursive: true });

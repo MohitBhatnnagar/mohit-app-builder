@@ -24,6 +24,7 @@ import { screenshot } from "./screenshot.ts";
 import { secretsReport } from "./secrets.ts";
 import { profileData } from "./profile.ts";
 import { typecheck } from "./typecheck.ts";
+import { checkInvariants, formatInvariants } from "./invariants.ts";
 
 const server = new McpServer(
   { name: "mohit", version: "0.1.0" },
@@ -104,10 +105,11 @@ server.registerTool(
     inputSchema: {
       name: z.string().min(1).describe("Human-readable app name, e.g. 'Recipe Box'."),
       description: z.string().default("").describe("One sentence on what the app does."),
+      slug: z.string().optional().describe("Optional project id (lowercase, dashes). Defaults to one made from the name."),
     },
   },
-  safe(({ name, description }) => {
-    const meta = createProject(name, description);
+  safe(({ name, description, slug }) => {
+    const meta = createProject(name, description, slug);
     return text(
       `Created "${meta.name}" (slug: ${meta.slug}).\n\nFiles:\n${listFiles(meta.slug).join("\n")}\n\n` +
         `It already runs: a sign-in screen and a notes demo. Replace the demo in server/routes.ts, ` +
@@ -321,9 +323,9 @@ server.registerTool(
       actions: z
         .array(
           z.object({
-            action: z.enum(["click", "fill", "press", "wait", "goto"]),
+            action: z.enum(["click", "fill", "press", "select", "wait", "goto"]),
             target: z.string().optional().describe("Selector: CSS, text=Visible text, or role=button[name='Save']. For goto: a path."),
-            value: z.string().optional().describe("fill: text to type; press: key like Enter; wait: milliseconds."),
+            value: z.string().optional().describe("fill: text to type; press: key like Enter; select: the option label (or value) of a <select>; wait: milliseconds."),
           }),
         )
         .max(25)
@@ -377,7 +379,111 @@ server.registerTool(
     });
     const r = await runScript(project, normalised, timeout_seconds * 1000);
     const summary = `${normalised} exited with code ${r.code} after ${(r.ms / 1000).toFixed(1)}s.${lint.length ? `\nWarning (likely bug):\n${lint.join("\n")}` : ""}`;
-    return r.code === 0 ? text(`${summary}\n${r.output}`) : fail(`${summary}\n${r.output}`);
+    if (r.code !== 0) return fail(`${summary}\n${r.output}`);
+    // After a seed, check the data straight away: the seed's mistakes are cheapest to fix now, before any screen shows them.
+    let after = "";
+    if (/seed/i.test(normalised)) {
+      try {
+        const problems = dataProblems(project);
+        const inv = checkInvariants(project);
+        const broken = inv?.filter((x) => x.broken || x.error) ?? [];
+        after = `\n\nData check: ${problems.length ? `${problems.length} possible problem(s):\n${problems.map((p) => `- ${p}`).join("\n")}` : "no obvious problems."}` +
+          (inv ? `\nInvariants: ${broken.length ? `${broken.length} of ${inv.length} broken:\n${formatInvariants(broken)}` : `all ${inv.length} hold.`}` : "");
+      } catch (e) {
+        after = `\n\n(Data check skipped: ${(e as Error).message})`;
+      }
+    }
+    return text(`${summary}\n${r.output}${after}`);
+  }),
+);
+
+/** The "Possible problems" lines of profile_data, without the full profile. */
+function dataProblems(project: string): string[] {
+  const report = profileData(project);
+  if (!report.startsWith("Possible problems")) return [];
+  return report.split(/\n\n/)[0].split("\n").slice(1).map((l) => l.replace(/^- /, ""));
+}
+
+server.registerTool(
+  "check_invariants",
+  {
+    description:
+      "Check the rules the app's data must always satisfy, from server/invariants.sql: each statement selects the rows that BREAK a rule (e.g. tickets sold beyond capacity, payments that don't add up), preceded by a '-- rule name' comment. All must return no rows.",
+    inputSchema: { project },
+  },
+  safe(({ project }) => {
+    const r = checkInvariants(project);
+    if (!r) return fail("No server/invariants.sql yet. Write one: '-- rule name' then a SELECT that returns the rows breaking it.");
+    const broken = r.filter((x) => x.broken || x.error);
+    const out = `${broken.length ? `${broken.length} of ${r.length} rules broken` : `All ${r.length} rules hold`}.\n${formatInvariants(r)}`;
+    return broken.length ? fail(out) : text(out);
+  }),
+);
+
+server.registerTool(
+  "verify_app",
+  {
+    description:
+      "One check of everything before telling the user an app works: type check, start, data check (profile_data warnings), invariants (server/invariants.sql), and desktop + phone screenshots of each page you list, with console errors, failed API calls and sideways scrolling. Returns a pass/fail report; fix every ✗ and run it again.",
+    inputSchema: {
+      project,
+      paths: z.array(z.string()).min(1).max(12).default(["/"]).describe("The app's main pages, e.g. [\"/\", \"/orders\", \"/settings\"]."),
+      signed_in_as: z.string().optional().describe("Email of a seeded user to view the pages as."),
+      images: z.boolean().default(false).describe("Also return the phone screenshots (costs more; use when you need to look)."),
+    },
+  },
+  safe(async ({ project, paths, signed_in_as, images }) => {
+    const sections: { name: string; ok: boolean; detail: string }[] = [];
+    const tc = await typecheck(project);
+    sections.push({ name: "Type check", ok: tc.ok, detail: tc.report.split("\n").slice(0, 12).join("\n") });
+    let url: string | null = null;
+    try {
+      url = appStatus(project).url ?? (await startApp(project)).url;
+      sections.push({ name: "Starts", ok: true, detail: url });
+    } catch (e) {
+      sections.push({ name: "Starts", ok: false, detail: (e as Error).message.slice(0, 1500) });
+    }
+    try {
+      const problems = dataProblems(project);
+      sections.push({ name: "Data check", ok: !problems.length, detail: problems.length ? problems.map((p) => `- ${p}`).join("\n") : "No obvious problems." });
+    } catch (e) {
+      sections.push({ name: "Data check", ok: false, detail: (e as Error).message });
+    }
+    try {
+      const inv = checkInvariants(project);
+      if (inv) {
+        const broken = inv.filter((x) => x.broken || x.error);
+        sections.push({ name: "Invariants", ok: !broken.length, detail: formatInvariants(inv) });
+      } else sections.push({ name: "Invariants", ok: false, detail: "No server/invariants.sql: write the rules this app's data must always satisfy (capacity, totals, states)." });
+    } catch (e) {
+      sections.push({ name: "Invariants", ok: false, detail: (e as Error).message });
+    }
+    const content: Content[] = [];
+    if (url) {
+      await warmUp(Number(new URL(url).port)).catch(() => {});
+      const pageLines: string[] = [];
+      let pagesOk = true;
+      for (const p of paths)
+        for (const width of [1280, 390]) {
+          try {
+            const { png, notes } = await screenshot(project, url, { path: p, width, height: 800, fullPage: false, signedInAs: signed_in_as });
+            const problems = notes.filter((n) => !n.startsWith("("));
+            if (problems.length) pagesOk = false;
+            pageLines.push(`${problems.length ? "✗" : "✓"} ${p} at ${width}px${problems.length ? `: ${problems.slice(0, 4).join(" | ")}` : ""}`);
+            if (images && width === 390) content.push({ type: "image", data: png, mimeType: "image/png" });
+          } catch (e) {
+            pagesOk = false;
+            pageLines.push(`✗ ${p} at ${width}px: ${(e as Error).message.slice(0, 300)}`);
+          }
+        }
+      sections.push({ name: "Pages (desktop + phone)", ok: pagesOk, detail: pageLines.join("\n") });
+    }
+    const passed = sections.filter((s) => s.ok).length;
+    const report =
+      `verify_app: ${passed} of ${sections.length} checks passed${passed === sections.length ? ". Still look at the screenshots yourself, and read the numbers on screen like a skeptic." : ". Fix every ✗ and run verify_app again."}\n\n` +
+      sections.map((s) => `${s.ok ? "✓" : "✗"} ${s.name}\n${s.detail.split("\n").map((l) => `   ${l}`).join("\n")}`).join("\n\n");
+    content.unshift({ type: "text", text: report });
+    return { content, isError: passed !== sections.length };
   }),
 );
 

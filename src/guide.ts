@@ -22,7 +22,14 @@ You write the product code; Mohit runs it and gives you a preview URL.
    Test multi-step flows with actions, e.g. [{action:"click",target:"text=Classic cut"},{action:"click",
    target:"text=10:30"},{action:"fill",target:"input[type=email]",value:"a@b.co"},{action:"click",
    target:"role=button[name='Confirm booking']"}] and screenshot the result.
+   confirm()/alert() dialogs are accepted automatically (and noted). Actions run against the app's REAL database: test with a throwaway account (or undo with query_db), so the demo
+   data stays clean.
 6. Use app_logs when something breaks, query_db to inspect or fix data, list_emails to see sent mail.
+6b. Write server/invariants.sql: the rules the data must always satisfy, each as "-- rule name" then a SELECT that
+   returns the rows BREAKING it (sold beyond capacity, totals that don't add up, impossible states). check_invariants
+   runs them; run_script runs them after every seed.
+6c. Before telling the user it works: verify_app with the app's main pages (type check, start, data check,
+   invariants, desktop + phone screenshots, console). Fix every ✗ and run it again.
 7. save_checkpoint with a clear message when a feature works. If a change goes badly, list_checkpoints and
    restore_checkpoint (code only; the database is not rolled back).
 Give the user the preview URL when the app works.
@@ -55,12 +62,14 @@ Never import a package that is not installed.
 - server/index.ts — server entry. Leave it alone unless you need extra middleware.
 - src/App.tsx — YOUR UI. src/api.ts has fetch helpers and the useUser hook.
 
-## Database — import { db, all, get, run } from "./platform/db.ts"
+## Database — import { db, all, get, run, transaction, insertMany } from "./platform/db.ts"
 - all<T>(sql, ...params): T[]      get<T>(sql, ...params): T | undefined
 - run(sql, ...params): { lastInsertRowid, changes }
 - Use ? placeholders. Timestamps: TEXT default (datetime('now')).
 - Built-in tables (do not recreate): users(id, email, name, created_at), sessions, files, _migrations.
 
+- transaction(() => { ... }) makes several writes atomic (check-then-insert, so two buyers can't take the last seat). It nests
+  safely: calling a function that uses transaction() or insertMany inside another transaction uses a savepoint.
 - insertMany(table, rows) inserts thousands of rows in one fast transaction; rows are plain objects.
 - query_db runs one statement, or a multi-statement script (no params) inside a transaction.
 
@@ -76,7 +85,14 @@ Never import a package that is not installed.
   It is deterministic, so screenshots are stable. Do randomness in TypeScript, not with SQL random().
 - For bulk users who never sign in, createUser({ ..., hashed: false }) is much faster. Pass createdAt
   (e.g. fake.sqlDate(540)) so users join over time; otherwise they all "joined" at the same second.
-- Make the data realistic in shape: varied values, uneven distributions, dates spread over time.
+- Make the data realistic in shape: varied values, uneven distributions, dates spread over time. Use the shape
+  helpers instead of hand-rolled date maths (they never produce future dates, clamped dates or wrong trends):
+  fake.spread(n, days, { growth: 1.4, season: [...12], hours: [9, 18], weekdays: true }) → n sorted past timestamps;
+  fake.when(from, to, { hours, weekdays }) → one moment in a window, never in the future (null if none);
+  fake.byAge(ageDays, [[2, { new: 3 }], [30, { open: 1, done: 4 }], [Infinity, { done: 9, lost: 1 }]]) → a status
+  that fits the item's age; fake.demand(capacity, popularity) → how many want something, scaled to its size;
+  fake.sql(ms) → "YYYY-MM-DD HH:MM:SS". fake.localDay(n) → the local calendar date n days ago (use it for day-keyed apps).
+- After run_script finishes a seed it runs the data check and invariants for you: fix what they report and re-seed.
 - After seeding, call profile_data and read it like a skeptic. Common seed bugs it reveals: events dated in the
   future, a trend going the wrong way (a growing business should have MORE recent rows), old items stuck "open"
   forever, balances that only ever go down, one value in every row, many rows on one timestamp. Fix the seed,
@@ -87,7 +103,7 @@ Never import a package that is not installed.
   People's attributes must fit what happens to them too: a child doesn't get a blood-pressure review.
 - If the seed calls the app's own jobs (billing, rollups), check they cover history: jobs often only process
   recent rows, and the older months silently stay empty.
-- Keep seeds idempotent (skip if already seeded). To re-seed: reset_data, then run_script.
+- Keep seeds idempotent (skip if already seeded). To re-seed: reset_data {project, confirm: true}, then run_script.
 - Tell the user the demo login (email + password) so they can sign in.
 
 ## Sign-in — import { requireUser, currentUser, createUser } from "./platform/auth.ts"
@@ -97,6 +113,13 @@ Never import a package that is not installed.
   POST /api/auth/logout, GET /api/auth/me. Sessions use an httpOnly cookie.
 - Frontend: const { user, loading, refresh } = useUser(); and the signup/login/logout helpers in src/api.ts.
   The starter's <AuthForm> in src/App.tsx is a ready sign-in screen.
+
+## Dates — import { userToday, isPastOrToday } from "./platform/dates.ts"
+- The server runs on UTC; the user's "today" differs. For apps keyed by calendar day (habits, diaries, rotas),
+  send the browser's date (header x-today: new Date().toLocaleDateString("en-CA")) and read it with userToday(req):
+  it refuses dates that can't be today anywhere on Earth, so a client can't tick tomorrow.
+- isPastOrToday(day) validates a YYYY-MM-DD the user picked: real date, not in the future. Use it on every write.
+- In invariants, "not in the future" is: day > date('now', '+14 hours').
 
 ## File storage — import { saveFile, fileUrl } from "./platform/storage.ts"
 - Frontend upload: await uploadFile(file) from src/api.ts → { id, name, url, size, type }.
@@ -177,6 +200,9 @@ Server-side only, needs ANTHROPIC_API_KEY. Options: { system?, maxTokens?, effor
 Build real, polished UIs: a clear layout, loading and empty states, readable errors, works on phone width.
 - Effects return nothing or a cleanup function: write useEffect(() => { window.scrollTo(0, 0); }, [path]) with braces.
   An arrow that returns a value crashes React (scrollTo returns a Promise in current browsers).
-- Phone layouts: flex and grid children need min-width: 0 to shrink (grid columns minmax(0, 1fr)); give a top nav
-  row overflow-x: auto. Check every main page at width 390.
+- Phone layouts: flex and grid children need min-width: 0 to shrink (grid columns minmax(0, 1fr)). Nothing important
+  may hide in a sideways-scrolling box: wrap the nav links (flex-wrap) or use a menu, and under 600px show wide
+  tables as stacked cards (each row a card of label: value lines) or drop minor columns. Screenshots at width ≤ 600
+  flag boxes that hide links or table columns; add data-scroll-ok to a box only if sideways scrolling is the point
+  (a timeline, a heatmap). Check every main page at width 390.
 `;

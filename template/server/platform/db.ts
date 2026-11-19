@@ -72,8 +72,23 @@ function explainInsertError(table: string, cols: string[], row: Record<string, u
 }
 
 /** Run fn inside a transaction; rolls back if it throws. */
+let savepoints = 0;
+/** Run fn atomically. Nests safely: inside another transaction (or insertMany) it uses a savepoint. */
 export function transaction<T>(fn: () => T): T {
-  db.exec("BEGIN");
+  if (db.isTransaction) {
+    const name = `sp_${++savepoints}`;
+    db.exec(`SAVEPOINT ${name}`);
+    try {
+      const out = fn();
+      db.exec(`RELEASE ${name}`);
+      return out;
+    } catch (err) {
+      db.exec(`ROLLBACK TO ${name}`);
+      db.exec(`RELEASE ${name}`);
+      throw err;
+    }
+  }
+  db.exec("BEGIN IMMEDIATE");
   try {
     const out = fn();
     db.exec("COMMIT");

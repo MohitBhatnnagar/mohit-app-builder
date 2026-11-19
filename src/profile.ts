@@ -54,6 +54,11 @@ export function profileData(slug: string, onlyTable?: string): string {
           const fut = Number(r.fut ?? 0);
           out.push(`- ${c.name}: ${r.lo} → ${r.hi}${fut ? `, ${fut.toLocaleString("en-US")} in the future` : ""}${nullNote}`);
           if (fut && /created|placed|sent|joined|signed|logged|posted/i.test(c.name)) warnings.push(`${t}.${c.name} has ${fut} rows dated in the future`);
+          // Impossible calendar dates (2026-02-30, 2027-13-45): SQLite stores any text, date() refuses it.
+          const bad = one<{ n: number; v: string | null }>(
+            `SELECT COUNT(*) AS n, MIN(${col}) AS v FROM ${id} WHERE ${col} IS NOT NULL AND (date(${col}) IS NULL OR date(${col}) <> substr(${col}, 1, 10))`,
+          );
+          if (Number(bad.n)) warnings.push(`${t}.${c.name}: ${Number(bad.n)} value(s) are not real dates (e.g. "${bad.v}"). Validate dates on the server (isPastOrToday / a Date round-trip), not just with a regex.`);
           // Pile-ups: many rows with the exact same timestamp usually mean dates were clamped (e.g. to "now").
           if (/\d{2}:\d{2}/.test(sample) && n >= 30) {
             // Clamping makes ONE group far bigger than the rest; batch jobs (weekly payouts) make many similar groups.
@@ -95,7 +100,7 @@ export function profileData(slug: string, onlyTable?: string): string {
               const first = Number(months[1].n);
               const last = Number(months[months.length - 2].n);
               if (first >= 10 && last >= first * 3)
-                warnings.push(`${t}.${c.name}: ${Math.round((last / first) * 10) / 10}× more rows per month in ${months[months.length - 2].m} than in ${months[1].m}. Real growth is rarely that steep: check older rows weren't skipped (e.g. a job that only processes recent data).`);
+                warnings.push(`${t}.${c.name}: ${Math.round((last / first) * 10) / 10}× more rows per month in ${months[months.length - 2].m} than in ${months[1].m}. Real growth is rarely that steep. If it's intended (users joining or adding items over time), start more of them earlier so the history looks lived-in; otherwise check older rows weren't skipped (e.g. a job that only processes recent data).`);
               else if (last >= 10 && first >= last * 3)
                 warnings.push(`${t}.${c.name}: monthly rows fell to a third (${months[1].m} ${first} → ${months[months.length - 2].m} ${last}). Is recent data missing?`);
             }
@@ -126,6 +131,35 @@ export function profileData(slug: string, onlyTable?: string): string {
         } else {
           const dupes = n - distinct;
           out.push(`- ${c.name}: ${distinct.toLocaleString("en-US")} distinct${dupes > n * 0.5 && n > 100 ? " (many repeats)" : ""}${nullNote}`);
+        }
+      }
+    }
+    // Children dated before the record they belong to (an order placed before its buyer signed up).
+    if (!onlyTable) {
+      const allTables = q<{ name: string }>("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'").map((x) => x.name).filter((x) => !SKIP.has(x));
+      const createdOf = (tbl: string) => q<{ name: string }>(`PRAGMA table_info("${tbl}")`).map((c) => c.name).find((c) => /^(created|joined|signed_up|registered)(_at|_on)?$/i.test(c));
+      for (const child of allTables.slice(0, 60)) {
+        const childCreated = createdOf(child);
+        if (!childCreated) continue;
+        for (const fk of q<{ table: string; from: string; to: string | null }>(`PRAGMA foreign_key_list("${child}")`)) {
+          const parentCreated = createdOf(fk.table);
+          if (!parentCreated || fk.table === child) continue;
+          try {
+            const r = one<{ n: number; total: number }>(
+              `SELECT SUM(c."${childCreated}" < datetime(p."${parentCreated}", '-1 hour')) AS n, COUNT(*) AS total FROM "${child}" c JOIN "${fk.table}" p ON p."${fk.to ?? "id"}" = c."${fk.from}"`,
+            );
+            const bad = Number(r.n ?? 0);
+            const total = Number(r.total);
+            if (!bad || bad < Math.max(3, total * 0.002)) continue;
+            const line = `${child}: ${bad} of ${total} rows have ${childCreated} before their ${fk.table} row was created (${fk.from} → ${fk.table}.${parentCreated})`;
+            // Nearly all rows, or a staff/later link (assignee, a portal account linked later): usually accounts created at
+            // seed time. Worth knowing, not a per-row bug.
+            if (bad > total * 0.6 || /^(assign|owner|staff|agent|approv|manag|review|handl|updated|closed)/i.test(fk.from))
+              out.push(`
+(note) ${line}: probably accounts created at seed time; back-date them if the UI shows "member since".`);
+            else
+              warnings.push(`${line}. Something can't happen before what it belongs to exists: date the parent (e.g. a user's signup) before its first child.`);
+          } catch { /* unusual schema: skip */ }
         }
       }
     }
