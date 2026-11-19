@@ -121,7 +121,7 @@ Each app is a normal folder with its own git history: `projects/<name>/`. Run on
 - Restoring a checkpoint restores code, not data. The database and uploads are not versioned.
 - AI helpers use `claude-opus-5-5` by default (set `MOHIT_AI_MODEL` to change) with server-side
   refusal fallback enabled. Every AI call is billed to your Anthropic account.
-- `npm run smoke` runs 76 end-to-end checks. It strips real API keys from its environment and uses a
+- `npm run smoke` runs 75 end-to-end checks. It strips real API keys from its environment and uses a
   mock email server, so it never sends mail or spends money.
 - `start_app` and `run_script` keep each app's `server/platform/` in sync with Mohit, so platform fixes
   reach existing apps (the update is saved as a checkpoint).
